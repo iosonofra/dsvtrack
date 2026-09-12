@@ -1,0 +1,48 @@
+#!/sbin/openrc-run
+# Service script for Camofox Browser Service on Alpine Linux
+
+name="camofox"
+description="Camofox Browser Automation Service for DSV Tracking"
+
+: ${CAMOFOX_USER:="dsv"}
+: ${CAMOFOX_GROUP:="dsv"}
+: ${CAMOFOX_DIR:="/opt/dsv-tracking-center"}
+: ${CAMOFOX_PORT:=9377}
+: ${NODE_BIN:="/usr/bin/node"}
+
+directory="${CAMOFOX_DIR}"
+command="${NODE_BIN}"
+command_args="src/start-camofox.js"
+command_user="${CAMOFOX_USER}:${CAMOFOX_GROUP}"
+command_background="yes"
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="/var/log/${RC_SVCNAME}.log"
+error_log="/var/log/${RC_SVCNAME}.err"
+
+export CAMOFOX_PORT="${CAMOFOX_PORT}"
+export CAMOUFOX_INSTALL_DIR="${CAMOFOX_DIR}/.cache/camoufox"
+export NODE_ENV="production"
+
+depend() {
+    need net
+    after firewall
+}
+
+start_pre() {
+    if [ ! -x "${NODE_BIN}" ]; then
+        eerror "Node.js non trovato in ${NODE_BIN}"
+        return 1
+    fi
+
+    if [ ! -f "${CAMOFOX_DIR}/src/start-camofox.js" ]; then
+        eerror "File ${CAMOFOX_DIR}/src/start-camofox.js non trovato"
+        return 1
+    fi
+
+    checkpath -d -m 0755 -o "${command_user}" /var/log
+    checkpath -f -m 0644 -o "${command_user}" "${output_log}" "${error_log}"
+    checkpath -d -m 0755 -o "${command_user}" "${CAMOFOX_DIR}/data"
+    checkpath -d -m 0755 -o "${command_user}" "${CAMOFOX_DIR}/data/camofox-profile"
+    checkpath -d -m 0755 -o "${command_user}" "${CAMOFOX_DIR}/.cache"
+    checkpath -d -m 0755 -o "${command_user}" "${CAMOFOX_DIR}/.cache/camoufox"
+}

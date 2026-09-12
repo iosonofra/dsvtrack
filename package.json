@@ -1,0 +1,24 @@
+{
+  "name": "prestashop-tracking-importer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "camofox": "node src/start-camofox.js",
+    "test": "node --test --test-concurrency=1 tests/*.test.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "express": "^5.1.0",
+    "multer": "^2.0.2",
+    "xlsx": "^0.18.5"
+  },
+  "optionalDependencies": {
+    "@askjo/camofox-browser": "^1.14.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

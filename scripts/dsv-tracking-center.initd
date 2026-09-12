@@ -1,0 +1,52 @@
+#!/sbin/openrc-run
+# Service script for DSV - Tracking Center on Alpine Linux
+
+name="dsv-tracking-center"
+description="DSV PrestaShop Tracking Center Service"
+
+: ${DSV_USER:="dsv"}
+: ${DSV_GROUP:="dsv"}
+: ${DSV_DIR:="/opt/dsv-tracking-center"}
+: ${DSV_PORT:=3000}
+: ${NODE_BIN:="/usr/bin/node"}
+
+directory="${DSV_DIR}"
+command="${NODE_BIN}"
+command_args="src/server.js"
+command_user="${DSV_USER}:${DSV_GROUP}"
+command_background="yes"
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="/var/log/${RC_SVCNAME}.log"
+error_log="/var/log/${RC_SVCNAME}.err"
+
+export PORT="${DSV_PORT}"
+export NODE_ENV="production"
+
+depend() {
+    need net
+    after firewall
+    use camofox
+}
+
+start_pre() {
+    # Verify node binary exists
+    if [ ! -x "${NODE_BIN}" ]; then
+        eerror "Node.js binary non trovato in ${NODE_BIN}"
+        return 1
+    fi
+
+    # Verify project directory exists
+    if [ ! -d "${DSV_DIR}" ]; then
+        eerror "Directory del progetto ${DSV_DIR} non trovata"
+        return 1
+    fi
+
+    # Ensure log files and data directory exist with correct permissions
+    checkpath -d -m 0755 -o "${command_user}" /var/log
+    checkpath -f -m 0644 -o "${command_user}" "${output_log}" "${error_log}"
+    checkpath -d -m 0755 -o "${command_user}" "${DSV_DIR}/data"
+
+    if [ -f "${DSV_DIR}/.env" ]; then
+        export $(grep -v '^#' "${DSV_DIR}/.env" | xargs)
+    fi
+}
