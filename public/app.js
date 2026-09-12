@@ -397,6 +397,8 @@ function updateControlSelectionUi(records = []) {
     $('#control-bulk-count').textContent = `${selected} selezionat${selected === 1 ? 'a' : 'e'}`;
     $('#control-bulk-verify').disabled = button.disabled;
     $('#control-bulk-manage').disabled = selected === 0;
+    const bulkSyncBtn = $('#control-bulk-sync-prestashop');
+    if (bulkSyncBtn) bulkSyncBtn.disabled = selected === 0;
   }
   const batchCount = Math.ceil(selected / maxRows);
   const summary = !dsvBetaSettings?.enabled ? 'Verifica DSV non disponibile: attivala nella Configurazione.' : selected > maxRows ? `${selected} selezionate: saranno verificate automaticamente in ${batchCount} blocchi da massimo ${maxRows}.` : selected ? `${selected} selezionate: la verifica DSV non modifica gli ordini.` : 'Seleziona una o più spedizioni per verificare lo stato DSV.';
@@ -890,25 +892,25 @@ function renderCronStatus(status) {
       headerBadge.style.background = '#eff6ff';
       headerBadge.style.color = '#1d4ed8';
       headerBadge.style.borderColor = '#93c5fd';
-      headerBadge.textContent = 'Scansione in corso…';
+      headerBadge.textContent = 'Controllo in corso';
     } else if (status.isNightPaused) {
       headerBadge.className = 'badge';
       headerBadge.style.background = '#fef3c7';
       headerBadge.style.color = '#b45309';
       headerBadge.style.borderColor = '#fde68a';
-      headerBadge.textContent = `Pausa notturna (${status.startHour}:00-${status.endHour}:00)`;
+      headerBadge.textContent = `In pausa · ${status.startHour}:00–${status.endHour}:00`;
     } else if (status.enabled) {
       headerBadge.className = 'badge info';
       headerBadge.style.background = '';
       headerBadge.style.color = '';
       headerBadge.style.borderColor = '';
-      headerBadge.textContent = `Attivo (ogni ${status.intervalMinutes}m)`;
+      headerBadge.textContent = `Pianificato · ogni ${status.intervalMinutes} min`;
     } else {
       headerBadge.className = 'badge';
       headerBadge.style.background = '';
       headerBadge.style.color = '';
       headerBadge.style.borderColor = '';
-      headerBadge.textContent = 'Disattivato';
+      headerBadge.textContent = 'Servizio disattivato';
     }
   }
 
@@ -916,16 +918,16 @@ function renderCronStatus(status) {
   if (indicator) {
     if (status.isRunning) {
       indicator.className = 'status-indicator running';
-      indicator.textContent = 'In esecuzione…';
+      indicator.textContent = 'In esecuzione';
     } else if (status.isNightPaused) {
       indicator.className = 'status-indicator paused';
       indicator.textContent = 'Pausa notturna';
     } else if (status.enabled) {
       indicator.className = 'status-indicator idle';
-      indicator.textContent = 'In attesa (schedulato)';
+      indicator.textContent = 'In attesa';
     } else {
       indicator.className = 'status-indicator idle';
-      indicator.textContent = 'Disattivato';
+      indicator.textContent = 'Inattivo';
     }
   }
 
@@ -1102,6 +1104,91 @@ function setupWorkspace() {
   stateMapping.className = 'card workspace-view state-mapping-card'; stateMapping.dataset.view = 'settings'; stateMapping.id = 'state-mapping-view';
   stateMapping.innerHTML = '<div class="control-heading"><div><p class="eyebrow">ALLINEAMENTO</p><h2>Mappatura stati DSV → PrestaShop</h2><p>Definisci lo stato ordine atteso per ogni esito DSV. I nuovi stati rilevati da Camoufox compariranno automaticamente qui.</p></div></div><form id="state-mapping-form"><div class="state-mapping-header"><span>Stato DSV rilevato</span><span>Stato PrestaShop corrispondente</span></div><div id="state-mapping-rows" class="state-mapping-rows"><p class="control-empty">Apri la configurazione per caricare gli stati.</p></div><div class="state-mapping-actions"><p id="state-mapping-message" class="message" aria-live="polite"></p><button id="save-state-mappings" type="submit">Salva mappatura</button></div></form>';
   main.append(stateMapping);
+  const settingsDashboard = document.createElement('div');
+  settingsDashboard.className = 'workspace-view settings-dashboard';
+  settingsDashboard.dataset.view = 'settings';
+  settingsDashboard.hidden = true;
+
+  const connectionCard = $('#config-form')?.closest('.card');
+  const catalogCard = $('#load-catalog')?.closest('.card');
+  const backupCard = $('.backup-card');
+  const cronCard = $('.cron-card');
+  const importCard = $('.import-card');
+  const dsvBetaCard = $('#dsv-beta');
+  const settingsCards = [connectionCard, catalogCard, dsvBetaCard, backupCard, cronCard, stateMapping].filter(Boolean);
+
+  settingsCards.forEach((card) => {
+    card.classList.remove('workspace-view');
+    delete card.dataset.view;
+    card.hidden = false;
+  });
+  connectionCard?.classList.add('settings-card', 'settings-connection-card');
+  catalogCard?.classList.add('settings-card', 'settings-catalog-card');
+  dsvBetaCard?.classList.add('card', 'settings-card', 'settings-camofox-card');
+  backupCard?.classList.add('settings-card');
+  cronCard?.classList.add('settings-card');
+  stateMapping.classList.add('settings-card');
+
+  if (connectionCard) {
+    connectionCard.querySelector('h2').textContent = 'Connessione PrestaShop';
+    const form = $('#config-form');
+    const saveButton = form?.querySelector('button[type="submit"], button:not([type])');
+    const testButton = $('#test-connection');
+    const actionGroup = document.createElement('div');
+    actionGroup.className = 'settings-form-actions';
+    if (testButton) actionGroup.append(testButton);
+    if (saveButton) actionGroup.append(saveButton);
+    form?.append(actionGroup);
+    const emptyActions = [...connectionCard.querySelectorAll(':scope > .actions')].find((item) => !item.children.length);
+    emptyActions?.remove();
+  }
+  if (catalogCard) {
+    catalogCard.querySelector('h2').textContent = 'Stati e corriere';
+    const catalogButton = $('#load-catalog');
+    if (catalogButton) catalogCard.querySelector('.inline')?.append(catalogButton);
+  }
+  if (backupCard) backupCard.querySelector('h2').textContent = 'Backup e ripristino';
+  if (cronCard) {
+    cronCard.querySelector('h2').textContent = 'Controllo automatico';
+    const cronHeading = cronCard.querySelector(':scope > .control-heading');
+    const cronSwitch = cronCard.querySelector('.cron-switch-row');
+    const cronStatus = cronCard.querySelector('.cron-header-status');
+    const cronHeaderControls = document.createElement('div');
+    cronHeaderControls.className = 'cron-header-controls';
+    if (cronSwitch) cronHeaderControls.append(cronSwitch);
+    if (cronStatus) cronHeaderControls.append(cronStatus);
+    cronHeading?.append(cronHeaderControls);
+
+    const cronForm = $('#cron-config-form');
+    const scheduleTitle = document.createElement('div');
+    scheduleTitle.className = 'cron-panel-heading';
+    scheduleTitle.innerHTML = '<h3>Pianificazione</h3><p>Definisci frequenza, volume e fascia oraria dei controlli.</p>';
+    cronForm?.prepend(scheduleTitle);
+  }
+
+  if (dsvBetaCard && importCard) {
+    const betaTitle = dsvBetaCard.querySelector('h3');
+    if (betaTitle) betaTitle.textContent = 'Connessione DSV via Camoufox';
+    const betaDescription = dsvBetaCard.querySelector('.beta-heading p');
+    if (betaDescription) betaDescription.textContent = 'Configura il browser locale usato per leggere lo stato pubblico delle spedizioni DSV.';
+    const betaPill = dsvBetaCard.querySelector('.beta-pill');
+    if (betaPill) betaPill.textContent = 'SERVIZIO LOCALE';
+    const importActions = importCard.querySelector(':scope > .actions');
+    const verifyDsvButton = $('#verify-dsv-beta');
+    const dsvProgress = $('#dsv-progress');
+    const dsvRunMessage = $('#dsv-beta-message');
+    if (verifyDsvButton && importActions) importActions.append(verifyDsvButton);
+    if (dsvProgress) importCard.append(dsvProgress);
+    if (dsvRunMessage) importCard.append(dsvRunMessage);
+    const configMessage = document.createElement('p');
+    configMessage.id = 'dsv-config-message';
+    configMessage.className = 'message';
+    configMessage.setAttribute('aria-live', 'polite');
+    dsvBetaCard.append(configMessage);
+  }
+
+  settingsDashboard.append(...settingsCards);
+  main.append(settingsDashboard);
   const history = document.createElement('section');
   history.className = 'card workspace-view'; history.dataset.view = 'history'; history.id = 'history-view'; history.hidden = true;
   history.innerHTML = '<div class="control-heading"><div><p class="eyebrow">TRACCIABILITÀ</p><h2>Storico importazioni</h2><p>Registro locale delle righe elaborate nelle sessioni precedenti.</p></div><button id="refresh-history" type="button" class="secondary">Aggiorna storico</button></div><div class="table-wrap"><table id="history-table"><thead><tr><th>Data</th><th>Tracking</th><th>Riferimento ordine</th><th>Esito</th><th>Dettaglio</th></tr></thead><tbody><tr><td colspan="5" class="control-empty">Nessuna importazione registrata.</td></tr></tbody></table></div>';
@@ -1155,12 +1242,13 @@ function setupControlWorkspace() {
   card.querySelector('.control-heading > div').insertAdjacentHTML('beforeend', '<div class="control-meta"><span id="control-service-status" class="control-service-status" data-state="off">DSV tracking non attivo</span><span id="control-last-sync" class="control-last-sync" aria-live="polite"></span></div>');
   card.querySelector('.control-filters').insertAdjacentHTML('beforebegin', '<nav id="control-quick-filters" class="control-quick-filters" aria-label="Filtra per stato DSV"><span class="filter-bar-label">Stati DSV</span><button type="button" class="control-quick-filter active" data-dsv-status=""><span>Tutte</span><strong>0</strong></button></nav>');
   card.querySelector('.control-filters').insertAdjacentHTML('beforeend', '<label class="control-dsv-filter-label" hidden>Stato DSV<select id="control-dsv-filter"><option value="">Tutti gli esiti DSV</option><option>Prenotata</option><option>In transito</option><option>Centro di distribuzione</option><option>In consegna</option><option>Consegnata</option><option>Non verificato</option><option>Da verificare manualmente</option><option>Errore beta</option><option>Spedizione non trovata</option><option>Intervento manuale richiesto</option><option>Eccezione DSV</option><option value="Archiviate">Archiviate</option></select></label><div class="control-filters-right"><label class="control-date-label">Controllato dal<input id="control-date-filter" type="date"></label><button id="control-clear-filters" type="button" class="secondary control-clear-filters">Pulisci filtri</button></div>');
-  card.querySelector('.control-filters').insertAdjacentHTML('afterend', '<div id="control-bulk-bar" class="control-bulk-bar" hidden><strong id="control-bulk-count">0 selezionate</strong><span>Azioni sulla selezione</span><button id="control-bulk-verify" type="button">Verifica DSV</button><button id="control-bulk-export" type="button" class="secondary">Esporta CSV</button><button id="control-bulk-manage" type="button" class="secondary">Segna in lavorazione</button><button id="control-bulk-clear" type="button" class="secondary">Deseleziona</button></div>');
+  card.querySelector('.control-filters').insertAdjacentHTML('afterend', '<div id="control-bulk-bar" class="control-bulk-bar" hidden><strong id="control-bulk-count">0 selezionate</strong><span>Azioni sulla selezione</span><button id="control-bulk-verify" type="button">Verifica DSV</button><button id="control-bulk-sync-prestashop" type="button" class="secondary">Allinea stato PrestaShop</button><button id="control-bulk-export" type="button" class="secondary">Esporta CSV</button><button id="control-bulk-manage" type="button" class="secondary">Segna in lavorazione</button><button id="control-bulk-clear" type="button" class="secondary">Deseleziona</button></div>');
   $('#control-dsv-filter').addEventListener('change', () => { controlPage = 1; refreshControlCenter(); });
   $('#control-date-filter').addEventListener('change', () => { controlPage = 1; refreshControlCenter(); });
   $('#control-clear-filters').addEventListener('click', () => { if ($('#global-tracking-query')) $('#global-tracking-query').value = ''; if ($('#control-dsv-filter')) $('#control-dsv-filter').value = ''; if ($('#control-date-filter')) $('#control-date-filter').value = ''; if ($('#control-exceptions')) $('#control-exceptions').checked = false; controlPage = 1; refreshControlCenter(); });
   $('#control-bulk-clear').addEventListener('click', () => { controlSelectedTrackingNumbers.clear(); refreshControlCenter(); });
   $('#control-bulk-verify').addEventListener('click', () => $('#verify-control-selected').click());
+  $('#control-bulk-sync-prestashop').addEventListener('click', openBulkPrestaShopDialog);
   $('#control-bulk-export').addEventListener('click', exportSelectedControlRows);
   $('#control-bulk-manage').addEventListener('click', markSelectedAsWorking);
   const tableWrap = card.querySelector('.table-wrap');
@@ -1187,7 +1275,7 @@ function setupControlWorkspace() {
     const bounds = detail.getBoundingClientRect();
     if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) closeControlDetail();
   });
-  document.body.insertAdjacentHTML('beforeend', '<dialog id="prestashop-state-dialog" class="prestashop-state-dialog" aria-labelledby="prestashop-state-title"><div id="prestashop-state-form-wrap"><form id="prestashop-state-form"><div class="prestashop-dialog-heading"><div><span>Aggiornamento ordine</span><h3 id="prestashop-state-title">Allinea stato PrestaShop</h3></div><button id="close-prestashop-state" type="button" class="detail-close" aria-label="Chiudi"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg></button></div><div id="prestashop-state-comparison" class="prestashop-state-comparison"></div><label>Nuovo stato PrestaShop<select id="prestashop-target-state" required><option value="">Caricamento stati…</option></select></label><p class="prestashop-dialog-note">Verrà creato un nuovo evento nello storico dell’ordine. L’email al cliente resterà disattivata.</p><p id="prestashop-state-message" class="message" aria-live="polite"></p><div class="prestashop-dialog-actions"><button id="cancel-prestashop-state" type="button" class="secondary">Annulla</button><button id="confirm-prestashop-state" type="submit">Aggiorna PrestaShop</button></div></form></div><div id="prestashop-state-success-wrap" class="prestashop-state-success-card" hidden><div class="prestashop-success-icon-ring"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg></div><div class="prestashop-success-content"><span class="prestashop-success-eyebrow">Operazione completata</span><h3 class="prestashop-success-title">Stato PrestaShop aggiornato!</h3><div id="prestashop-success-badge-slot" class="prestashop-success-badge-slot"></div><p id="prestashop-success-desc" class="prestashop-success-desc"></p></div><div class="prestashop-timer-bar-track"><div id="prestashop-timer-bar-fill" class="prestashop-timer-bar-fill"></div></div><div class="prestashop-dialog-actions prestashop-success-actions"><button id="prestashop-success-close-btn" type="button" class="secondary prestashop-quick-close">Chiudi subito</button></div></div></dialog>');
+  document.body.insertAdjacentHTML('beforeend', '<dialog id="prestashop-state-dialog" class="prestashop-state-dialog" aria-labelledby="prestashop-state-title"><div id="prestashop-state-form-wrap"><form id="prestashop-state-form"><div class="prestashop-dialog-heading"><div><span>Aggiornamento ordine</span><h3 id="prestashop-state-title">Allinea stato PrestaShop</h3></div><button id="close-prestashop-state" type="button" class="detail-close" aria-label="Chiudi"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg></button></div><div id="prestashop-state-comparison" class="prestashop-state-comparison"></div><label>Nuovo stato PrestaShop<select id="prestashop-target-state" required><option value="">Caricamento stati…</option></select></label><p class="prestashop-dialog-note">Verrà creato un nuovo evento nello storico dell’ordine. L’email al cliente resterà disattivata.</p><p id="prestashop-state-message" class="message" aria-live="polite"></p><div class="prestashop-dialog-actions"><button id="cancel-prestashop-state" type="button" class="secondary">Annulla</button><button id="confirm-prestashop-state" type="submit">Aggiorna PrestaShop</button></div></form></div><div id="prestashop-state-success-wrap" class="prestashop-state-success-card" hidden><div class="prestashop-success-icon-ring"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg></div><div class="prestashop-success-content"><span class="prestashop-success-eyebrow">Operazione completata</span><h3 class="prestashop-success-title">Stato PrestaShop aggiornato!</h3><div id="prestashop-success-badge-slot" class="prestashop-success-badge-slot"></div><p id="prestashop-success-desc" class="prestashop-success-desc"></p></div><div class="prestashop-timer-bar-track"><div id="prestashop-timer-bar-fill" class="prestashop-timer-bar-fill"></div></div><div class="prestashop-dialog-actions prestashop-success-actions"><button id="prestashop-success-close-btn" type="button" class="secondary prestashop-quick-close">Chiudi subito</button></div></div></dialog><dialog id="prestashop-bulk-dialog" class="prestashop-state-dialog prestashop-bulk-dialog" aria-labelledby="prestashop-bulk-title"><div id="prestashop-bulk-form-wrap" class="prestashop-bulk-form-wrap"><div class="prestashop-dialog-heading"><div><span>Aggiornamento massivo ordini</span><h3 id="prestashop-bulk-title">Allinea stati PrestaShop</h3></div><button id="close-prestashop-bulk" type="button" class="detail-close" aria-label="Chiudi"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg></button></div><label class="prestashop-bulk-select-label">Modalità di allineamento stato PrestaShop<select id="prestashop-bulk-state-select" class="prestashop-bulk-state-select"><option value="auto">⚡ Mappatura automatica DSV (consigliata)</option><optgroup id="prestashop-bulk-forced-group" label="Oppure forza uno stato PrestaShop per tutte"></optgroup></select></label><div id="prestashop-bulk-forced-notice" class="prestashop-bulk-forced-notice" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x2="12.01" y1="17" y2="17"/></svg><span><strong>Modalità forzata:</strong> le regole basate sullo stato DSV vengono ignorate. Tutte le spedizioni con ordine verranno impostate sullo stato selezionato.</span></div><div id="prestashop-bulk-preview-content"></div><p class="prestashop-dialog-note">Come per l’aggiornamento singolo, verrà creato un nuovo evento nello storico di ciascun ordine. L’email al cliente resterà disattivata.</p><p id="prestashop-bulk-message" class="message" aria-live="polite"></p><div class="prestashop-dialog-actions"><button id="cancel-prestashop-bulk" type="button" class="secondary">Annulla</button><button id="confirm-prestashop-bulk" type="button">Conferma allineamento</button></div></div><div id="prestashop-bulk-progress-wrap" class="prestashop-bulk-progress-wrap" hidden><svg class="prestashop-bulk-progress-spinner" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"></circle><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"></path></svg><h3 class="prestashop-bulk-progress-title">Allineamento PrestaShop in corso…</h3><div class="prestashop-bulk-progress-bar-wrap"><div class="prestashop-bulk-progress-labels"><span id="prestashop-bulk-progress-text">0 di 0</span><span id="prestashop-bulk-progress-percent">0%</span></div><div class="prestashop-bulk-progress-track"><div id="prestashop-bulk-progress-bar" class="prestashop-bulk-progress-bar"></div></div></div><p id="prestashop-bulk-progress-info" class="prestashop-bulk-progress-info">Preparazione aggiornamenti…</p></div><div id="prestashop-bulk-success-wrap" class="prestashop-state-success-card" hidden><div class="prestashop-success-icon-ring"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg></div><div class="prestashop-success-content"><span class="prestashop-success-eyebrow">Operazione completata</span><h3 class="prestashop-success-title" id="prestashop-bulk-success-title">Allineamento completato!</h3><p id="prestashop-bulk-success-desc" class="prestashop-success-desc"></p><div id="prestashop-bulk-errors-box" class="prestashop-bulk-errors" hidden></div></div><div class="prestashop-timer-bar-track"><div id="prestashop-bulk-timer-bar-fill" class="prestashop-timer-bar-fill"></div></div><div class="prestashop-dialog-actions prestashop-success-actions"><button id="prestashop-bulk-success-close-btn" type="button" class="secondary prestashop-quick-close">Chiudi subito</button></div></div></dialog>');
   
   const prestashopDialog = $('#prestashop-state-dialog');
   const closePrestaShopDialog = () => {
@@ -1208,6 +1296,33 @@ function setupControlWorkspace() {
     }
   });
   $('#prestashop-state-form').addEventListener('submit', updatePrestaShopState);
+
+  const prestashopBulkDialog = $('#prestashop-bulk-dialog');
+  const closePrestaShopBulkDialog = () => {
+    if (prestashopBulkRunning) return;
+    if (prestashopBulkSuccessTimeout) {
+      clearTimeout(prestashopBulkSuccessTimeout);
+      prestashopBulkSuccessTimeout = null;
+    }
+    prestashopBulkDialog?.close();
+  };
+  $('#close-prestashop-bulk')?.addEventListener('click', closePrestaShopBulkDialog);
+  $('#cancel-prestashop-bulk')?.addEventListener('click', closePrestaShopBulkDialog);
+  prestashopBulkDialog?.addEventListener('cancel', (e) => {
+    if (prestashopBulkRunning) { e.preventDefault(); return; }
+    closePrestaShopBulkDialog();
+  });
+  prestashopBulkDialog?.addEventListener('click', (event) => {
+    if (prestashopBulkRunning) return;
+    if (event.target !== prestashopBulkDialog) return;
+    const bounds = prestashopBulkDialog.getBoundingClientRect();
+    if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) {
+      closePrestaShopBulkDialog();
+    }
+  });
+  $('#prestashop-bulk-state-select')?.addEventListener('change', () => {
+    renderBulkPreview();
+  });
 
   const reportDialog = $('#verification-report-dialog');
   $('#close-verification-report')?.addEventListener('click', () => reportDialog?.close());
@@ -1242,6 +1357,8 @@ function setupControlWorkspace() {
 }
 
 let prestashopSuccessTimeout = null;
+let prestashopBulkSuccessTimeout = null;
+let prestashopBulkRunning = false;
 
 function showFloatingToast(message, type = 'success') {
   let container = $('#toast-container');
@@ -1401,6 +1518,266 @@ async function updatePrestaShopState(event) {
   }
 }
 
+function categorizeSelectedShipments(forcedState = null) {
+  const selectedRows = controlRecords.filter((row) => controlSelectedTrackingNumbers.has(row.trackingNumber));
+  const actionable = [];
+  const skippedAlreadyAligned = [];
+  const skippedNoOrder = [];
+  const skippedUnmapped = [];
+
+  for (const row of selectedRows) {
+    if (!row.orderId) {
+      skippedNoOrder.push(row);
+      continue;
+    }
+
+    if (forcedState) {
+      const sameStateId = row.prestaStateId && String(row.prestaStateId) === String(forcedState.id);
+      const sameStateName = normalizedStateLabel(row.currentState) === normalizedStateLabel(forcedState.name);
+      if (sameStateId || sameStateName) {
+        skippedAlreadyAligned.push(row);
+        continue;
+      }
+      actionable.push({
+        shipment: row,
+        targetStateId: String(forcedState.id),
+        targetStateName: forcedState.name,
+      });
+    } else {
+      const mapped = mappedPrestaShopState(row);
+      if (!mapped || !mapped.stateId) {
+        skippedUnmapped.push(row);
+        continue;
+      }
+      if (isPrestaShopStateAligned(row)) {
+        skippedAlreadyAligned.push(row);
+        continue;
+      }
+      actionable.push({
+        shipment: row,
+        targetStateId: String(mapped.stateId),
+        targetStateName: mapped.stateName,
+      });
+    }
+  }
+
+  return { selectedRows, actionable, skippedAlreadyAligned, skippedNoOrder, skippedUnmapped };
+}
+
+function renderBulkPreview() {
+  const select = $('#prestashop-bulk-state-select');
+  const mode = select?.value || 'auto';
+  let forcedState = null;
+  if (mode !== 'auto' && prestaShopStateCatalog) {
+    forcedState = prestaShopStateCatalog.find((s) => String(s.id) === String(mode)) || null;
+  }
+
+  const { actionable, skippedAlreadyAligned, skippedNoOrder, skippedUnmapped } = categorizeSelectedShipments(forcedState);
+
+  const isForced = Boolean(forcedState);
+  const notice = $('#prestashop-bulk-forced-notice');
+  if (notice) notice.hidden = !isForced;
+
+  const targetGroups = {};
+  for (const item of actionable) {
+    targetGroups[item.targetStateName] = (targetGroups[item.targetStateName] || 0) + 1;
+  }
+
+  const skippedTotal = skippedAlreadyAligned.length + skippedNoOrder.length + skippedUnmapped.length;
+
+  let previewHtml = `
+    <div class="prestashop-bulk-cards">
+      <div class="prestashop-bulk-card actionable">
+        <div class="prestashop-bulk-card-header">
+          <span class="prestashop-bulk-card-title">${isForced ? 'Pronte per la forzatura' : 'Pronte per l’aggiornamento'}</span>
+          <span class="prestashop-bulk-card-count">${actionable.length}</span>
+        </div>
+        <div class="prestashop-bulk-list">
+          ${actionable.length ? Object.entries(targetGroups).map(([stateName, count]) => `
+            <div class="prestashop-bulk-item">
+              <span>${count} spedizion${count === 1 ? 'e' : 'i'}</span>
+              <strong>→ ${escapeHtml(stateName)}</strong>
+            </div>
+          `).join('') : '<span class="prestashop-bulk-empty-note">Nessuna spedizione idonea</span>'}
+        </div>
+      </div>
+      <div class="prestashop-bulk-card skipped">
+        <div class="prestashop-bulk-card-header">
+          <span class="prestashop-bulk-card-title">Saranno saltate</span>
+          <span class="prestashop-bulk-card-count">${skippedTotal}</span>
+        </div>
+        <div class="prestashop-bulk-list">
+          ${skippedAlreadyAligned.length ? `<div class="prestashop-bulk-item"><span>${isForced ? 'Già in questo stato' : 'Già allineate'}</span><strong>${skippedAlreadyAligned.length}</strong></div>` : ''}
+          ${skippedNoOrder.length ? `<div class="prestashop-bulk-item"><span>Senza ordine PrestaShop</span><strong>${skippedNoOrder.length}</strong></div>` : ''}
+          ${skippedUnmapped.length ? `<div class="prestashop-bulk-item"><span>Stato DSV non mappato</span><strong>${skippedUnmapped.length}</strong></div>` : ''}
+          ${skippedTotal === 0 ? '<span class="prestashop-bulk-empty-note">Nessuna esclusa</span>' : ''}
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#prestashop-bulk-preview-content').innerHTML = previewHtml;
+  $('#prestashop-bulk-message').className = 'message';
+  if (actionable.length === 0) {
+    $('#prestashop-bulk-message').textContent = isForced 
+      ? `Tutte le spedizioni selezionate sono già nello stato “${forcedState.name}” o non hanno un ordine PrestaShop.`
+      : 'Nessuna delle spedizioni selezionate richiede un aggiornamento con le mappature attuali.';
+  } else {
+    $('#prestashop-bulk-message').textContent = isForced
+      ? `Verrà forzato lo stato “${forcedState.name}” su ${actionable.length} ordin${actionable.length === 1 ? 'e' : 'i'} in sequenza.`
+      : `Verranno aggiornati ${actionable.length} ordin${actionable.length === 1 ? 'e' : 'i'} PrestaShop in sequenza.`;
+  }
+
+  const confirmBtn = $('#confirm-prestashop-bulk');
+  confirmBtn.disabled = actionable.length === 0;
+  confirmBtn.textContent = actionable.length
+    ? (isForced ? `Forza stato “${forcedState.name}” (${actionable.length})` : `Allinea ${actionable.length} ordin${actionable.length === 1 ? 'e' : 'i'}`)
+    : 'Nessun ordine da aggiornare';
+
+  confirmBtn.onclick = () => executeBulkPrestaShopSync(actionable);
+}
+
+async function openBulkPrestaShopDialog() {
+  const selectedRows = controlRecords.filter((row) => controlSelectedTrackingNumbers.has(row.trackingNumber));
+  if (!selectedRows.length) return;
+
+  const dialog = $('#prestashop-bulk-dialog');
+  if (!dialog) return;
+
+  $('#prestashop-bulk-form-wrap').hidden = false;
+  $('#prestashop-bulk-progress-wrap').hidden = true;
+  $('#prestashop-bulk-success-wrap').hidden = true;
+
+  if (!prestaShopStateCatalog) {
+    try {
+      prestaShopStateCatalog = (await request('/api/catalog')).statuses || [];
+    } catch (e) {
+      prestaShopStateCatalog = [];
+    }
+  }
+
+  const forcedGroup = $('#prestashop-bulk-forced-group');
+  if (forcedGroup && prestaShopStateCatalog?.length) {
+    forcedGroup.innerHTML = prestaShopStateCatalog.map((state) => 
+      `<option value="${escapeHtml(state.id)}">${escapeHtml(state.name)}</option>`
+    ).join('');
+  }
+
+  const modeSelect = $('#prestashop-bulk-state-select');
+  if (modeSelect) modeSelect.value = 'auto';
+
+  renderBulkPreview();
+
+  if (!dialog.open) dialog.showModal();
+}
+
+async function executeBulkPrestaShopSync(actionableList) {
+  if (!actionableList.length || prestashopBulkRunning) return;
+
+  prestashopBulkRunning = true;
+  $('#prestashop-bulk-form-wrap').hidden = true;
+  $('#prestashop-bulk-progress-wrap').hidden = false;
+  $('#prestashop-bulk-success-wrap').hidden = true;
+
+  const total = actionableList.length;
+  let completed = 0;
+  const successfulTrackings = [];
+  const failedItems = [];
+
+  const updateProgressBar = (current, infoText) => {
+    const percent = Math.round((current / total) * 100);
+    $('#prestashop-bulk-progress-text').textContent = `${current} di ${total}`;
+    $('#prestashop-bulk-progress-percent').textContent = `${percent}%`;
+    $('#prestashop-bulk-progress-bar').style.width = `${percent}%`;
+    $('#prestashop-bulk-progress-info').textContent = infoText || '';
+  };
+
+  updateProgressBar(0, `Inizio allineamento di ${total} ordini…`);
+
+  for (let i = 0; i < actionableList.length; i++) {
+    const item = actionableList[i];
+    const tracking = item.shipment.trackingNumber;
+    const orderRef = item.shipment.orderReference || item.shipment.orderId || tracking;
+    const stateId = item.targetStateId;
+    const stateName = item.targetStateName;
+
+    updateProgressBar(completed, `Aggiornamento ordine ${orderRef} (${i + 1}/${total}) → ${stateName}…`);
+
+    try {
+      await request(`/api/control-center/${encodeURIComponent(tracking)}/prestashop-state`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stateId })
+      });
+      successfulTrackings.push(tracking);
+      controlSelectedTrackingNumbers.delete(tracking);
+    } catch (err) {
+      failedItems.push({
+        tracking,
+        orderReference: orderRef,
+        error: err.message || 'Errore durante l’aggiornamento',
+      });
+    }
+
+    completed++;
+    updateProgressBar(completed, `Completato ${orderRef}`);
+
+    if (i < actionableList.length - 1) {
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    }
+  }
+
+  prestashopBulkRunning = false;
+
+  $('#prestashop-bulk-progress-wrap').hidden = true;
+  $('#prestashop-bulk-success-wrap').hidden = false;
+
+  const successCount = successfulTrackings.length;
+  const failCount = failedItems.length;
+
+  $('#prestashop-bulk-success-title').textContent = failCount === 0
+    ? 'Allineamento completato!'
+    : `${successCount} aggiornati, ${failCount} non riusciti`;
+
+  let desc = `${successCount} ordin${successCount === 1 ? 'e' : 'i'} aggiornat${successCount === 1 ? 'o' : 'i'} con successo su PrestaShop.`;
+  if (failCount > 0) {
+    desc += ` Le ${failCount} spedizioni con errore restano selezionate per consentirti di verificare.`;
+  }
+  $('#prestashop-bulk-success-desc').textContent = desc;
+
+  const errorsBox = $('#prestashop-bulk-errors-box');
+  if (failCount > 0) {
+    errorsBox.hidden = false;
+    errorsBox.innerHTML = failedItems.map((f) => `<div><strong>${escapeHtml(f.orderReference)} (${escapeHtml(f.tracking)}):</strong> ${escapeHtml(f.error)}</div>`).join('');
+  } else {
+    errorsBox.hidden = true;
+    errorsBox.innerHTML = '';
+  }
+
+  const timerFill = $('#prestashop-bulk-timer-bar-fill');
+  timerFill.classList.remove('active');
+  void timerFill.offsetWidth;
+  timerFill.classList.add('active');
+
+  let finished = false;
+  const finishAndUpdate = async () => {
+    if (finished) return;
+    finished = true;
+    if (prestashopBulkSuccessTimeout) {
+      clearTimeout(prestashopBulkSuccessTimeout);
+      prestashopBulkSuccessTimeout = null;
+    }
+    const dialog = $('#prestashop-bulk-dialog');
+    if (dialog.open) dialog.close();
+
+    showFloatingToast(`${successCount} ordin${successCount === 1 ? 'e' : 'i'} allineat${successCount === 1 ? 'o' : 'i'} su PrestaShop`, failCount === 0 ? 'success' : 'warning');
+    await refreshControlCenter();
+  };
+
+  $('#prestashop-bulk-success-close-btn').onclick = finishAndUpdate;
+  prestashopBulkSuccessTimeout = setTimeout(finishAndUpdate, failCount > 0 ? 5500 : 2500);
+}
+
 function closeControlDetail() {
   const panel = $('#shipment-detail');
   controlDetailRequestToken += 1;
@@ -1454,6 +1831,7 @@ function showView(requestedView) {
   if (view === 'control') void refreshControlCenter();
   if (view === 'history') void renderImportHistory();
   if (view === 'settings') {
+    if ($('#dsv-beta')) $('#dsv-beta').hidden = false;
     void loadStateMappings();
     void loadCronStatus();
   }
@@ -1904,13 +2282,13 @@ $('#save-dsv-beta').addEventListener('click', async () => {
   try {
     const data = await request('/api/dsv-beta/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: $('#dsv-beta-enabled').checked, camofoxUrl: $('#dsv-camofox-url').value, trackingUrl: $('#dsv-tracking-url').value }) });
     dsvBetaSettings = data; updateControlServiceStatus(); updateSelectionUi(); updateControlSelectionUi([...document.querySelectorAll('.control-row-select')].map((input) => ({ trackingNumber: input.dataset.tracking })));
-    tell('#dsv-beta-message', data.enabled ? `Beta attiva: massimo ${data.maxRows} righe per blocco, una richiesta ogni ${data.intervalMs / 1000} secondi, cache fino a ${data.cacheHours} ore.` : 'Beta salvata ma disattivata.', data.enabled ? 'warning' : '');
-  } catch (e) { tell('#dsv-beta-message', e.message, 'error'); }
+    tell('#dsv-config-message', data.enabled ? `Servizio attivo: massimo ${data.maxRows} righe per blocco, una richiesta ogni ${data.intervalMs / 1000} secondi, cache fino a ${data.cacheHours} ore.` : 'Configurazione salvata; servizio disattivato.', data.enabled ? 'warning' : '');
+  } catch (e) { tell('#dsv-config-message', e.message, 'error'); }
 });
 
 $('#test-dsv-beta').addEventListener('click', async () => {
-  try { $('#test-dsv-beta').disabled = true; tell('#dsv-beta-message', 'Controllo del solo servizio Camofox locale in corso…'); const result = await request('/api/dsv-beta/test', { method: 'POST' }); tell('#dsv-beta-message', result.message, 'success'); }
-  catch (e) { tell('#dsv-beta-message', e.message, 'error'); }
+  try { $('#test-dsv-beta').disabled = true; tell('#dsv-config-message', 'Controllo del servizio Camoufox locale in corso…'); const result = await request('/api/dsv-beta/test', { method: 'POST' }); tell('#dsv-config-message', result.message, 'success'); }
+  catch (e) { tell('#dsv-config-message', e.message, 'error'); }
   finally { $('#test-dsv-beta').disabled = false; }
 });
 

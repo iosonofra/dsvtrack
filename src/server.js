@@ -323,6 +323,63 @@ app.post('/api/control-center/:trackingNumber/prestashop-state', async (req, res
   } catch (error) { res.status(400).json({ error: error.message }); }
 });
 
+app.post('/api/control-center/bulk-prestashop-state', async (req, res) => {
+  try {
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    if (!items.length) throw new Error('Nessuna spedizione specificata per l’allineamento.');
+    const shop = client();
+    const states = await shop.listOrderStates();
+    const statesMap = new Map(states.map((state) => [String(state.id), state]));
+
+    const results = [];
+    for (const item of items) {
+      const tracking = String(item.trackingNumber || '').trim();
+      const stateId = String(item.stateId || '').trim();
+      try {
+        if (!tracking) throw new Error('Numero di spedizione mancante.');
+        const shipment = await getShipment(tracking);
+        if (!shipment) throw new Error('Spedizione non presente nel centro di controllo.');
+        if (!shipment.orderId) throw new Error('La spedizione non è collegata a un ordine PrestaShop.');
+        if (!stateId) throw new Error('Stato PrestaShop non specificato.');
+        const targetState = statesMap.get(stateId);
+        if (!targetState) throw new Error('Lo stato PrestaShop selezionato non è disponibile.');
+
+        const sameStateId = shipment.prestaStateId && String(shipment.prestaStateId) === stateId;
+        const sameStateName = String(shipment.currentState || '').trim().toLocaleLowerCase('it-IT') === String(targetState.name || '').trim().toLocaleLowerCase('it-IT');
+        if (sameStateId || sameStateName) {
+          results.push({ trackingNumber: tracking, orderId: shipment.orderId, success: true, skipped: true, shipment, message: `L’ordine era già nello stato “${targetState.name}”.` });
+          continue;
+        }
+
+        await shop.applyOrderUpdate({
+          orderId: shipment.orderId,
+          trackingNumber: shipment.trackingNumber,
+          carrierId: '',
+          stateId,
+          updateTracking: false,
+          updateState: true,
+        });
+        const updated = await syncManualPrestaShopState(shipment.trackingNumber, { stateId, stateName: targetState.name });
+        results.push({ trackingNumber: tracking, orderId: shipment.orderId, success: true, shipment: updated, message: `Stato aggiornato a “${targetState.name}”.` });
+      } catch (err) {
+        results.push({ trackingNumber: tracking, success: false, error: err.message });
+      }
+    }
+
+    const successfulCount = results.filter((r) => r.success && !r.skipped).length;
+    const skippedCount = results.filter((r) => r.skipped).length;
+    const failedCount = results.filter((r) => !r.success).length;
+
+    res.json({
+      total: items.length,
+      successfulCount,
+      skippedCount,
+      failedCount,
+      results,
+    });
+  } catch (error) { res.status(400).json({ error: error.message }); }
+});
+
 app.get('/api/control-center/:trackingNumber/prestashop-live', async (req, res) => {
   try {
     const shipment = await getShipment(req.params.trackingNumber);
