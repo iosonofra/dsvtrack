@@ -39,10 +39,10 @@ All'interno dello stesso container Alpine Linux girano due servizi coordinati tr
 
 | Parametro | Solo Web App (Sync PrestaShop) | Con Camofox Attivo (Scraper DSV) | Note |
 | :--- | :--- | :--- | :--- |
-| **Distribuzione** | Alpine Linux 3.20 o 3.21 | Alpine Linux 3.20 o 3.21 | Template ufficiale Proxmox VE |
+| **Distribuzione** | **Alpine Linux** (o Debian 12) | **Debian 12** (Consigliata per glibc nativa) | Camoufox/Firefox richiede glibc per evitare stalli futex su musl |
 | **RAM** | **512 MB** | **1536 MB – 2048 MB** | Il rendering headless con Camoufox richiede RAM adeguata |
 | **CPU** | 1 o 2 vCPU | 2 vCPU | Consigliato 2 core per evitare colli di bottiglia |
-| **Disco** | 4 GB | 8 GB | Spazio per binario browser Camoufox e librerie X11/GTK |
+| **Disco** | 4 GB | 8 GB – 20 GB | Spazio per binario browser Camoufox e librerie grafiche X11/GTK |
 | **Rete** | Bridge standard (`vmbr0`) | Bridge standard (`vmbr0`) | DHCP o IP statico con uscita Internet |
 
 ---

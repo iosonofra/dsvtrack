@@ -39,8 +39,12 @@ if command -v rc-service >/dev/null 2>&1; then
     rc-service dsv-tracking-center restart
     echo "${GREEN}Servizio OpenRC dsv-tracking-center riavviato.${NC}"
 elif command -v systemctl >/dev/null 2>&1; then
+    if systemctl is-enabled --quiet camofox 2>/dev/null || [ -f /etc/systemd/system/camofox.service ]; then
+        systemctl restart camofox || true
+        echo "${GREEN}Servizio Camofox riavviato.${NC}"
+    fi
     systemctl restart dsv-tracking-center
-    echo "${GREEN}Servizio systemd riavviato.${NC}"
+    echo "${GREEN}Servizio systemd dsv-tracking-center riavviato.${NC}"
 else
     echo "Riavvia manualmente il processo dell'applicazione."
 fi

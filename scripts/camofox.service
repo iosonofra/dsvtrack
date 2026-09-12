@@ -1,0 +1,20 @@
+[Unit]
+Description=Camofox Browser Automation Service for DSV Tracking
+After=network.target
+
+[Service]
+Type=simple
+User=dsv
+Group=dsv
+WorkingDirectory=/opt/dsv-tracking-center
+Environment=NODE_ENV=production
+Environment=CAMOFOX_PORT=9377
+Environment=CAMOUFOX_INSTALL_DIR=/opt/dsv-tracking-center/.cache/camoufox
+ExecStart=/usr/bin/node src/start-camofox.js
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/camofox.log
+StandardError=append:/var/log/camofox.err
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,19 @@
+[Unit]
+Description=DSV Tracking Center Web App
+After=network.target
+
+[Service]
+Type=simple
+User=dsv
+Group=dsv
+WorkingDirectory=/opt/dsv-tracking-center
+Environment=NODE_ENV=production
+Environment=PORT=3000
+ExecStart=/usr/bin/node src/server.js
+Restart=always
+RestartSec=3
+StandardOutput=append:/var/log/dsv-tracking-center.log
+StandardError=append:/var/log/dsv-tracking-center.log
+
+[Install]
+WantedBy=multi-user.target

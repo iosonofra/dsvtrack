@@ -80,7 +80,29 @@ fi
 
 read -rp "$(echo -e "${CYAN}URL Repository GitHub [https://github.com/USERNAME/REPO.git]: ${NC}")" GITHUB_REPO
 
-# 3. Rilevamento architettura CPU dell'host Proxmox (amd64 vs arm64)
+# 3. Scelta distribuzione Linux
+if [ "${INSTALL_CAMOFOX}" = "true" ]; then
+    DEFAULT_DISTRO="debian"
+    echo -e "${YELLOW}Raccomandazione: con Camofox attivo, Debian 12 è consigliata per garantire l'esecuzione nativa di Firefox (glibc).${NC}"
+else
+    DEFAULT_DISTRO="alpine"
+fi
+
+read -rp "$(echo -e "${CYAN}Distribuzione Linux [${DEFAULT_DISTRO}] (debian / alpine): ${NC}")" INPUT_DISTRO
+case "$INPUT_DISTRO" in
+    [aA]lpine*)
+        DISTRO="alpine"
+        OSTYPE="alpine"
+        DISTRO_LABEL="Alpine Linux"
+        ;;
+    *)
+        DISTRO="debian"
+        OSTYPE="debian"
+        DISTRO_LABEL="Debian 12 (Bookworm)"
+        ;;
+esac
+
+# 4. Rilevamento architettura CPU dell'host Proxmox (amd64 vs arm64)
 HOST_UNAME=$(uname -m)
 case "${HOST_UNAME}" in
     x86_64) ARCH_FILTER="amd64" ;;
@@ -88,15 +110,22 @@ case "${HOST_UNAME}" in
     *) ARCH_FILTER="amd64" ;;
 esac
 echo -e "Architettura host Proxmox rilevata: ${BOLD}${ARCH_FILTER} (${HOST_UNAME})${NC}"
+echo -e "Distribuzione selezionata: ${BOLD}${DISTRO_LABEL}${NC}"
 
 echo ""
-echo -e "${YELLOW}==> 1/5 Download template Alpine Linux per architettura ${ARCH_FILTER}...${NC}"
+echo -e "${YELLOW}==> 1/5 Download template ${DISTRO_LABEL} (${ARCH_FILTER})...${NC}"
 pveam update >/dev/null 2>&1 || true
 
-# Ricerca template Alpine corrispondente all'architettura dell'host
-TEMPLATE_NAME=$(pveam available --section system | awk '{print $2}' | grep -E "^alpine-[0-9]+\.[0-9]+.*_${ARCH_FILTER}\.tar" | sort -V | tail -n1)
-if [ -z "${TEMPLATE_NAME}" ]; then
-    TEMPLATE_NAME="alpine-3.21-default_20241203_${ARCH_FILTER}.tar.xz"
+if [ "${DISTRO}" = "debian" ]; then
+    TEMPLATE_NAME=$(pveam available --section system | awk '{print $2}' | grep -E "^debian-12-standard.*_${ARCH_FILTER}\.tar" | sort -V | tail -n1)
+    if [ -z "${TEMPLATE_NAME}" ]; then
+        TEMPLATE_NAME="debian-12-standard_12.7-1_${ARCH_FILTER}.tar.zst"
+    fi
+else
+    TEMPLATE_NAME=$(pveam available --section system | awk '{print $2}' | grep -E "^alpine-[0-9]+\.[0-9]+.*_${ARCH_FILTER}\.tar" | sort -V | tail -n1)
+    if [ -z "${TEMPLATE_NAME}" ]; then
+        TEMPLATE_NAME="alpine-3.21-default_20241203_${ARCH_FILTER}.tar.xz"
+    fi
 fi
 
 # Verifica se già scaricato
@@ -113,7 +142,7 @@ FULL_TEMPLATE="${DEFAULT_TMPL_STORAGE}:vztmpl/${TEMPLATE_NAME}"
 if pct status "${CTID}" >/dev/null 2>&1; then
     echo ""
     echo -e "${YELLOW}Attenzione: il container ${CTID} esiste già sull'host Proxmox.${NC}"
-    read -rp "$(echo -e "${CYAN}Vuoi rimuoverlo e ricrearlo pulito con architettura corretta? [S/n]: ${NC}")" DESTROY_CONFIRM
+    read -rp "$(echo -e "${CYAN}Vuoi rimuoverlo e ricrearlo pulito con ${DISTRO_LABEL}? [S/n]: ${NC}")" DESTROY_CONFIRM
     case "$DESTROY_CONFIRM" in
         [nN][oO]|[nN])
             echo -e "${RED}Installazione interrotta. Rilancia lo script scegliendo un Container ID libero.${NC}"
@@ -128,13 +157,13 @@ if pct status "${CTID}" >/dev/null 2>&1; then
 fi
 
 echo ""
-echo -e "${YELLOW}==> 2/5 Creazione container LXC (ID: ${CTID}, Hostname: ${CT_HOSTNAME}, Arch: ${ARCH_FILTER})...${NC}"
+echo -e "${YELLOW}==> 2/5 Creazione container LXC (ID: ${CTID}, Hostname: ${CT_HOSTNAME}, OS: ${DISTRO_LABEL})...${NC}"
 
 NET_CONFIG="name=eth0,bridge=${CT_BRIDGE},ip=${CT_IP},firewall=1"
 [ -n "${CT_GW}" ] && NET_CONFIG="${NET_CONFIG},gw=${CT_GW}"
 
 pct create "${CTID}" "${FULL_TEMPLATE}" \
-    --ostype alpine \
+    --ostype "${OSTYPE}" \
     --hostname "${CT_HOSTNAME}" \
     --cores "${CT_CORES}" \
     --memory "${CT_RAM}" \
@@ -165,12 +194,19 @@ for i in $(seq 1 15); do
 done
 
 echo ""
-echo -e "${YELLOW}==> 4/5 Configurazione software e dipendenze in Alpine...${NC}"
+echo -e "${YELLOW}==> 4/5 Configurazione software e dipendenze in ${DISTRO_LABEL}...${NC}"
 
-pct exec "${CTID}" -- /bin/sh -c "apk update && apk add --no-cache git ca-certificates curl"
-pct exec "${CTID}" -- /bin/sh -c "rm -rf /opt/dsv-tracking-center && git clone '${GITHUB_REPO}' /opt/dsv-tracking-center"
-pct exec "${CTID}" -- /bin/sh -c "chmod +x /opt/dsv-tracking-center/scripts/*.sh /opt/dsv-tracking-center/scripts/*.initd"
-pct exec "${CTID}" -- /bin/sh -c "ENABLE_CAMOFOX='${INSTALL_CAMOFOX}' sh /opt/dsv-tracking-center/scripts/setup-alpine.sh '${GITHUB_REPO}'"
+if [ "${DISTRO}" = "debian" ]; then
+    pct exec "${CTID}" -- /bin/bash -c "apt-get update && apt-get install -y curl git ca-certificates"
+    pct exec "${CTID}" -- /bin/bash -c "rm -rf /opt/dsv-tracking-center && git clone '${GITHUB_REPO}' /opt/dsv-tracking-center"
+    pct exec "${CTID}" -- /bin/bash -c "chmod +x /opt/dsv-tracking-center/scripts/*.sh"
+    pct exec "${CTID}" -- /bin/bash -c "ENABLE_CAMOFOX='${INSTALL_CAMOFOX}' bash /opt/dsv-tracking-center/scripts/setup-debian.sh '${GITHUB_REPO}'"
+else
+    pct exec "${CTID}" -- /bin/sh -c "apk update && apk add --no-cache git ca-certificates curl"
+    pct exec "${CTID}" -- /bin/sh -c "rm -rf /opt/dsv-tracking-center && git clone '${GITHUB_REPO}' /opt/dsv-tracking-center"
+    pct exec "${CTID}" -- /bin/sh -c "chmod +x /opt/dsv-tracking-center/scripts/*.sh /opt/dsv-tracking-center/scripts/*.initd"
+    pct exec "${CTID}" -- /bin/sh -c "ENABLE_CAMOFOX='${INSTALL_CAMOFOX}' sh /opt/dsv-tracking-center/scripts/setup-alpine.sh '${GITHUB_REPO}'"
+fi
 
 echo ""
 echo -e "${YELLOW}==> 5/5 Rilevamento indirizzo di rete...${NC}"
@@ -198,10 +234,18 @@ echo ""
 echo -e "Comandi rapidi dalla shell di Proxmox:"
 echo -e "  Entrare nella shell LXC   : ${BOLD}pct enter ${CTID}${NC}"
 echo -e "  Modificare le credenziali : ${BOLD}pct exec ${CTID} -- nano /opt/dsv-tracking-center/.env${NC}"
+if [ "${DISTRO}" = "debian" ]; then
+echo -e "  Riavviare la Web App      : ${BOLD}pct exec ${CTID} -- systemctl restart dsv-tracking-center${NC}"
+if [ "${INSTALL_CAMOFOX}" = "true" ]; then
+echo -e "  Riavviare Camofox         : ${BOLD}pct exec ${CTID} -- systemctl restart camofox${NC}"
+fi
+echo -e "  Vedere i log live         : ${BOLD}pct exec ${CTID} -- journalctl -u dsv-tracking-center -f${NC}"
+else
 echo -e "  Riavviare la Web App      : ${BOLD}pct exec ${CTID} -- rc-service dsv-tracking-center restart${NC}"
 if [ "${INSTALL_CAMOFOX}" = "true" ]; then
 echo -e "  Riavviare Camofox         : ${BOLD}pct exec ${CTID} -- rc-service camofox restart${NC}"
 fi
-echo -e "  Aggiornare da GitHub      : ${BOLD}pct exec ${CTID} -- /opt/dsv-tracking-center/scripts/update.sh${NC}"
 echo -e "  Vedere i log live         : ${BOLD}pct exec ${CTID} -- tail -f /var/log/dsv-tracking-center.log${NC}"
+fi
+echo -e "  Aggiornare da GitHub      : ${BOLD}pct exec ${CTID} -- /opt/dsv-tracking-center/scripts/update.sh${NC}"
 echo ""
