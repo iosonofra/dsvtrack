@@ -845,14 +845,259 @@ function setupBackupRestore() {
   updateBackupCount();
 }
 
+let cronPollingTimer = null;
+let cronLastIsRunning = false;
+
+async function loadCronStatus() {
+  try {
+    const status = await request('/api/cron/status');
+    renderCronStatus(status);
+  } catch (err) {
+    console.error('[CRON] Errore caricamento stato cron:', err);
+  }
+}
+
+function renderCronStatus(status) {
+  if (!status) return;
+
+  const enabledInput = $('#cron-enabled');
+  const intervalSelect = $('#cron-interval');
+  const batchSizeInput = $('#cron-batch-size');
+  const minCheckIntervalSelect = $('#cron-min-check-interval');
+  const nightPauseCheckbox = $('#cron-night-pause');
+  const startHourInput = $('#cron-start-hour');
+  const endHourInput = $('#cron-end-hour');
+  const hoursRow = $('#cron-hours-row');
+
+  const activeEl = document.activeElement;
+  const isEditingForm = [enabledInput, intervalSelect, batchSizeInput, minCheckIntervalSelect, nightPauseCheckbox, startHourInput, endHourInput].includes(activeEl);
+
+  if (!isEditingForm) {
+    if (enabledInput) enabledInput.checked = Boolean(status.enabled);
+    if (intervalSelect) intervalSelect.value = String(status.intervalMinutes || 60);
+    if (batchSizeInput) batchSizeInput.value = String(status.batchSize || 25);
+    if (minCheckIntervalSelect) minCheckIntervalSelect.value = String(status.minCheckIntervalHours || 2);
+    if (nightPauseCheckbox) nightPauseCheckbox.checked = Boolean(status.nightPause);
+    if (startHourInput) startHourInput.value = String(status.startHour ?? 8);
+    if (endHourInput) endHourInput.value = String(status.endHour ?? 20);
+    if (hoursRow) hoursRow.style.opacity = status.nightPause ? '1' : '0.4';
+  }
+
+  const headerBadge = $('#cron-badge-status');
+  if (headerBadge) {
+    if (status.isRunning) {
+      headerBadge.className = 'badge';
+      headerBadge.style.background = '#eff6ff';
+      headerBadge.style.color = '#1d4ed8';
+      headerBadge.style.borderColor = '#93c5fd';
+      headerBadge.textContent = 'Scansione in corso…';
+    } else if (status.isNightPaused) {
+      headerBadge.className = 'badge';
+      headerBadge.style.background = '#fef3c7';
+      headerBadge.style.color = '#b45309';
+      headerBadge.style.borderColor = '#fde68a';
+      headerBadge.textContent = `Pausa notturna (${status.startHour}:00-${status.endHour}:00)`;
+    } else if (status.enabled) {
+      headerBadge.className = 'badge info';
+      headerBadge.style.background = '';
+      headerBadge.style.color = '';
+      headerBadge.style.borderColor = '';
+      headerBadge.textContent = `Attivo (ogni ${status.intervalMinutes}m)`;
+    } else {
+      headerBadge.className = 'badge';
+      headerBadge.style.background = '';
+      headerBadge.style.color = '';
+      headerBadge.style.borderColor = '';
+      headerBadge.textContent = 'Disattivato';
+    }
+  }
+
+  const indicator = $('#cron-running-indicator');
+  if (indicator) {
+    if (status.isRunning) {
+      indicator.className = 'status-indicator running';
+      indicator.textContent = 'In esecuzione…';
+    } else if (status.isNightPaused) {
+      indicator.className = 'status-indicator paused';
+      indicator.textContent = 'Pausa notturna';
+    } else if (status.enabled) {
+      indicator.className = 'status-indicator idle';
+      indicator.textContent = 'In attesa (schedulato)';
+    } else {
+      indicator.className = 'status-indicator idle';
+      indicator.textContent = 'Disattivato';
+    }
+  }
+
+  const lastRunEl = $('#cron-last-run-time');
+  if (lastRunEl) {
+    lastRunEl.textContent = status.lastRunAt ? displayDateTime(status.lastRunAt) : 'Mai eseguito';
+  }
+
+  const nextRunEl = $('#cron-next-run-time');
+  if (nextRunEl) {
+    if (status.isRunning) {
+      nextRunEl.textContent = 'In corso';
+    } else if (status.enabled && status.nextRunAt) {
+      nextRunEl.textContent = displayDateTime(status.nextRunAt);
+    } else {
+      nextRunEl.textContent = status.enabled ? 'A breve' : 'Nessuno (disattivato)';
+    }
+  }
+
+  const activeBox = $('#cron-active-box');
+  const triggerBtn = $('#cron-trigger-now-btn');
+  if (triggerBtn) {
+    triggerBtn.disabled = Boolean(status.isRunning);
+  }
+
+  if (status.isRunning && status.activeProgress) {
+    if (activeBox) activeBox.hidden = false;
+    const progress = status.activeProgress;
+    const total = progress.total || 1;
+    const completed = progress.completed || 0;
+    const pct = Math.round((completed / total) * 100);
+
+    const pctEl = $('#cron-progress-pct');
+    const barEl = $('#cron-progress-bar');
+    const detailEl = $('#cron-progress-detail');
+
+    if (pctEl) pctEl.textContent = `${pct}% (${completed}/${total})`;
+    if (barEl) barEl.style.width = `${pct}%`;
+    if (detailEl) detailEl.textContent = `Controllo spedizione: ${escapeHtml(progress.currentTracking || '—')} (${completed + 1} di ${total})…`;
+
+    if (!cronPollingTimer) {
+      cronPollingTimer = setInterval(loadCronStatus, 2000);
+    }
+  } else {
+    if (activeBox) activeBox.hidden = true;
+    if (cronPollingTimer) {
+      clearInterval(cronPollingTimer);
+      cronPollingTimer = null;
+    }
+
+    if (cronLastIsRunning && !status.isRunning) {
+      showFloatingToast('Controllo periodico completato con successo!', 'success');
+      void refreshControlCenter();
+    }
+  }
+
+  cronLastIsRunning = Boolean(status.isRunning);
+
+  const summaryList = $('#cron-summary-list');
+  if (summaryList) {
+    const s = status.lastRunSummary;
+    if (!s) {
+      summaryList.innerHTML = '<li>Nessuna scansione recente registrata.</li>';
+    } else if (s.type === 'skipped') {
+      summaryList.innerHTML = `<li><em>${escapeHtml(s.reason)}</em></li><li style="color:var(--muted)">Registrato alle: ${displayDateTime(s.at)}</li>`;
+    } else {
+      const deliveredText = s.deliveredFound > 0
+        ? `<strong style="color:var(--success)">${s.deliveredFound} spedizioni consegnate trovate!</strong>`
+        : 'Nessuna nuova consegna rilevata';
+      const errorsText = s.errors > 0
+        ? `<span style="color:var(--danger)"> · ${s.errors} con errore</span>`
+        : '';
+      const cancelledText = s.type === 'cancelled' ? ' <span style="color:var(--warning)">(Interrotta dall’operatore)</span>' : '';
+
+      summaryList.innerHTML = `
+        <li>Spedizioni verificate: <strong>${s.checked || 0}</strong> di ${s.totalCandidates || 0}${cancelledText}</li>
+        <li>Esito: ${deliveredText}${errorsText}</li>
+        <li>Durata: <strong>${s.durationSeconds || 0}s</strong> · Eseguito: ${displayDateTime(s.at)}</li>
+      `;
+    }
+  }
+}
+
+function setupCronSection() {
+  const form = $('#cron-config-form');
+  const nightPauseCheckbox = $('#cron-night-pause');
+  const hoursRow = $('#cron-hours-row');
+  const triggerBtn = $('#cron-trigger-now-btn');
+  const stopBtn = $('#cron-stop-btn');
+  const msg = $('#cron-save-message');
+
+  nightPauseCheckbox?.addEventListener('change', () => {
+    if (hoursRow) hoursRow.style.opacity = nightPauseCheckbox.checked ? '1' : '0.4';
+  });
+
+  form?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const saveBtn = $('#save-cron-btn');
+    if (saveBtn) saveBtn.disabled = true;
+
+    try {
+      const payload = {
+        enabled: $('#cron-enabled')?.checked,
+        intervalMinutes: Number($('#cron-interval')?.value) || 60,
+        batchSize: Number($('#cron-batch-size')?.value) || 25,
+        minCheckIntervalHours: Number($('#cron-min-check-interval')?.value) || 2,
+        nightPause: $('#cron-night-pause')?.checked,
+        startHour: Number($('#cron-start-hour')?.value) || 8,
+        endHour: Number($('#cron-end-hour')?.value) || 20,
+      };
+
+      const res = await request('/api/cron/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (msg) {
+        msg.className = 'message success';
+        msg.textContent = 'Impostazioni cron salvate con successo!';
+      }
+      showFloatingToast('Configurazione cron salvata!', 'success');
+      renderCronStatus(res.status);
+    } catch (err) {
+      if (msg) {
+        msg.className = 'message error';
+        msg.textContent = `Errore salvataggio: ${err.message}`;
+      }
+    } finally {
+      if (saveBtn) saveBtn.disabled = false;
+    }
+  });
+
+  triggerBtn?.addEventListener('click', async () => {
+    triggerBtn.disabled = true;
+    try {
+      const res = await request('/api/cron/trigger', { method: 'POST' });
+      showFloatingToast('Controllo manuale avviato in background!', 'success');
+      renderCronStatus(res.status);
+      if (!cronPollingTimer) {
+        cronPollingTimer = setInterval(loadCronStatus, 2000);
+      }
+    } catch (err) {
+      alert(`Impossibile avviare il controllo: ${err.message}`);
+      triggerBtn.disabled = false;
+    }
+  });
+
+  stopBtn?.addEventListener('click', async () => {
+    stopBtn.disabled = true;
+    try {
+      const res = await request('/api/cron/stop', { method: 'POST' });
+      showFloatingToast(res.message || 'Richiesta di arresto inviata.', 'warning');
+      renderCronStatus(res.status);
+    } catch (err) {
+      alert(`Errore: ${err.message}`);
+    } finally {
+      stopBtn.disabled = false;
+    }
+  });
+}
+
 function setupWorkspace() {
   const main = $('main');
   const cards = [...main.querySelectorAll(':scope > section.card')];
-  cards[0].dataset.view = 'settings'; cards[0].classList.add('workspace-view');
-  cards[1].dataset.view = 'settings'; cards[1].classList.add('workspace-view');
-  cards[2].dataset.view = 'import'; cards[2].classList.add('workspace-view');
-  cards[3].dataset.view = 'control'; cards[3].classList.add('workspace-view');
-  if (cards[4]) { cards[4].dataset.view = 'settings'; cards[4].classList.add('workspace-view'); }
+  cards.forEach((card) => {
+    if (card.classList.contains('import-card')) card.dataset.view = 'import';
+    else if (card.classList.contains('control-center-card')) card.dataset.view = 'control';
+    else if (card.classList.contains('history-card')) card.dataset.view = 'history';
+    else card.dataset.view = 'settings';
+    card.classList.add('workspace-view');
+  });
   const stateMapping = document.createElement('section');
   stateMapping.className = 'card workspace-view state-mapping-card'; stateMapping.dataset.view = 'settings'; stateMapping.id = 'state-mapping-view';
   stateMapping.innerHTML = '<div class="control-heading"><div><p class="eyebrow">ALLINEAMENTO</p><h2>Mappatura stati DSV → PrestaShop</h2><p>Definisci lo stato ordine atteso per ogni esito DSV. I nuovi stati rilevati da Camoufox compariranno automaticamente qui.</p></div></div><form id="state-mapping-form"><div class="state-mapping-header"><span>Stato DSV rilevato</span><span>Stato PrestaShop corrispondente</span></div><div id="state-mapping-rows" class="state-mapping-rows"><p class="control-empty">Apri la configurazione per caricare gli stati.</p></div><div class="state-mapping-actions"><p id="state-mapping-message" class="message" aria-live="polite"></p><button id="save-state-mappings" type="submit">Salva mappatura</button></div></form>';
@@ -878,6 +1123,7 @@ function setupWorkspace() {
   $('#refresh-history').addEventListener('click', renderImportHistory);
   $('#state-mapping-form').addEventListener('submit', saveStateMappings);
   setupBackupRestore();
+  setupCronSection();
   const helpDialog = $('#help-dialog');
   if (helpDialog) {
     $('#topbar-help-btn')?.addEventListener('click', () => {
@@ -1207,7 +1453,10 @@ function showView(requestedView) {
   document.title = view === 'control' ? 'DSV - Tracking Center' : `${titles[view][0]} · DSV - Tracking Center`;
   if (view === 'control') void refreshControlCenter();
   if (view === 'history') void renderImportHistory();
-  if (view === 'settings') void loadStateMappings();
+  if (view === 'settings') {
+    void loadStateMappings();
+    void loadCronStatus();
+  }
 }
 
 async function loadStateMappings() {
@@ -1760,5 +2009,5 @@ window.addEventListener('scroll', () => {
 }, { passive: true });
 
 setupWorkspace();
-Promise.all([initialConfig(), loadDsvBeta(), refreshControlCenter()]).catch(() => {});
+Promise.all([initialConfig(), loadDsvBeta(), refreshControlCenter(), loadCronStatus()]).catch(() => {});
 showView(location.hash.slice(1) || 'control');

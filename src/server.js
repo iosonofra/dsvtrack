@@ -4,8 +4,9 @@ import express from 'express';
 import multer from 'multer';
 import { readDsvWorkbook } from './excel-import.js';
 import { PrestaShopClient } from './prestashop-client.js';
-import { exportSettingsData, loadSettings, normalizeDsvStateMappings, restoreSettingsData, saveSettings } from './settings-store.js';
+import { exportSettingsData, loadSettings, normalizeCronSettings, normalizeDsvStateMappings, restoreSettingsData, saveSettings } from './settings-store.js';
 import { DEFAULT_DSV_TRACKING_URL, DSV_PARSER_VERSION, DsvBetaClient, normalizeBetaSettings } from './dsv-beta-client.js';
+import { DsvCronService } from './dsv-cron.js';
 import { archiveShipment, exportShipmentsData, getControlCenter, getExistingShipmentsIndex, getShipment, restoreShipmentsData, syncAppliedShipments, syncDsvShipments, syncManualPrestaShopState, syncShipmentPrestaShopShipping, syncVerifiedShipments, updateShipmentCase } from './shipment-store.js';
 
 const app = express();
@@ -32,7 +33,21 @@ let connection = await loadSettings({
   baseUrl: process.env.PRESTASHOP_URL ?? '',
   apiKey: process.env.PRESTASHOP_WEBSERVICE_KEY ?? '',
   dsvBeta: { enabled: false, camofoxUrl: process.env.CAMOFOX_URL ?? 'http://127.0.0.1:9377', trackingUrl: process.env.DSV_TRACKING_URL ?? DEFAULT_DSV_TRACKING_URL },
+  cron: { enabled: false, intervalMinutes: 60, nightPause: true, startHour: 8, endHour: 20, batchSize: 25, minCheckIntervalHours: 2 },
 });
+
+const cronService = new DsvCronService({
+  getSettings: () => connection,
+  saveSettings: async (updated) => {
+    connection = updated;
+    await saveSettings(connection);
+  },
+  dsvBetaClientFactory: (cfg) => new DsvBetaClient(cfg),
+  loadShipments: exportShipmentsData,
+  syncDsvShipments,
+});
+
+cronService.start();
 
 app.use(express.json());
 app.use(express.static('public'));
@@ -113,6 +128,7 @@ app.post('/api/backup/restore', upload.single('file'), async (req, res) => {
         apiKey: process.env.PRESTASHOP_WEBSERVICE_KEY ?? '',
       });
       restoredSettings = true;
+      cronService.start();
     }
 
     const { restoredCount } = await restoreShipmentsData(shipments);
@@ -166,6 +182,47 @@ app.get('/api/dsv-beta/jobs/:jobId', (req, res) => {
   const job = dsvBetaJobs.get(req.params.jobId);
   if (!job) return res.status(404).json({ error: 'Verifica DSV non trovata o scaduta.' });
   res.json({ status: job.status, progress: job.progress, result: job.status === 'complete' ? job.result : null, error: job.error });
+});
+
+app.get('/api/cron/status', (_req, res) => {
+  res.json(cronService.getStatus());
+});
+
+app.post('/api/cron/config', async (req, res) => {
+  try {
+    const updated = normalizeCronSettings(req.body ?? {});
+    await cronService.updateConfig(updated);
+    res.json({ ok: true, config: updated, status: cronService.getStatus() });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post('/api/cron/trigger', (req, res) => {
+  try {
+    if (cronService.isRunning) {
+      return res.status(409).json({ error: 'Un ciclo di controllo delle spedizioni è già in corso.' });
+    }
+    void cronService.triggerScan({ manual: true }).catch((err) => {
+      console.error('[DSV-CRON] Errore scansione manuale:', err.message);
+    });
+    res.status(202).json({
+      ok: true,
+      message: 'Scansione avviata in background.',
+      status: cronService.getStatus(),
+    });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post('/api/cron/stop', (_req, res) => {
+  try {
+    const result = cronService.stopScan();
+    res.json({ ...result, status: cronService.getStatus() });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
 });
 
 app.get('/api/catalog', async (_req, res) => {

@@ -16,6 +16,17 @@ export function normalizeDsvStateMappings(value = {}) {
   }, {});
 }
 
+export function normalizeCronSettings(input = {}) {
+  const enabled = Boolean(input.enabled);
+  const intervalMinutes = Math.min(Math.max(Number(input.intervalMinutes) || 60, 15), 1440);
+  const nightPause = input.nightPause !== undefined ? Boolean(input.nightPause) : true;
+  const startHour = Math.min(Math.max(Number(input.startHour) || 8, 0), 23);
+  const endHour = Math.min(Math.max(Number(input.endHour) || 20, 0), 23);
+  const batchSize = Math.min(Math.max(Number(input.batchSize) || 25, 1), 100);
+  const minCheckIntervalHours = Math.min(Math.max(Number(input.minCheckIntervalHours) || 2, 0.5), 72);
+  return { enabled, intervalMinutes, nightPause, startHour, endHour, batchSize, minCheckIntervalHours };
+}
+
 export async function loadSettings(defaults) {
   try {
     const parsed = JSON.parse(await readFile(settingsPath, 'utf8'));
@@ -34,6 +45,7 @@ export async function loadSettings(defaults) {
       dsvStateMappings: normalizeDsvStateMappings(parsed.dsvStateMappings),
       defaultCarrierId: String(parsed.defaultCarrierId || defaults.defaultCarrierId || '').trim(),
       defaultCarrierName: String(parsed.defaultCarrierName || defaults.defaultCarrierName || '').trim(),
+      cron: normalizeCronSettings(parsed.cron || defaults.cron),
     };
   } catch {
     return defaults;
@@ -50,6 +62,7 @@ export async function saveSettings(settings) {
     dsvStateMappings: normalizeDsvStateMappings(settings.dsvStateMappings),
     defaultCarrierId: String(settings.defaultCarrierId || '').trim(),
     defaultCarrierName: String(settings.defaultCarrierName || '').trim(),
+    cron: normalizeCronSettings(settings.cron),
   }), 'utf8');
   await rename(temporaryPath, settingsPath);
 }
@@ -67,6 +80,7 @@ export function exportSettingsData(settings) {
     dsvStateMappings: normalizeDsvStateMappings(settings.dsvStateMappings),
     defaultCarrierId: String(settings.defaultCarrierId || '').trim(),
     defaultCarrierName: String(settings.defaultCarrierName || '').trim(),
+    cron: normalizeCronSettings(settings.cron),
   };
 }
 
@@ -91,8 +105,10 @@ export async function restoreSettingsData(importedSettings, defaults = {}) {
     dsvStateMappings: normalizeDsvStateMappings(importedSettings.dsvStateMappings),
     defaultCarrierId: String(importedSettings.defaultCarrierId || defaults.defaultCarrierId || '').trim(),
     defaultCarrierName: String(importedSettings.defaultCarrierName || defaults.defaultCarrierName || '').trim(),
+    cron: normalizeCronSettings(importedSettings.cron || defaults.cron),
   };
   await saveSettings(merged);
   return merged;
 }
+
 
