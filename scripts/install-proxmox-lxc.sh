@@ -80,14 +80,23 @@ fi
 
 read -rp "$(echo -e "${CYAN}URL Repository GitHub [https://github.com/USERNAME/REPO.git]: ${NC}")" GITHUB_REPO
 
+# 3. Rilevamento architettura CPU dell'host Proxmox (amd64 vs arm64)
+HOST_UNAME=$(uname -m)
+case "${HOST_UNAME}" in
+    x86_64) ARCH_FILTER="amd64" ;;
+    aarch64|arm64) ARCH_FILTER="arm64" ;;
+    *) ARCH_FILTER="amd64" ;;
+esac
+echo -e "Architettura host Proxmox rilevata: ${BOLD}${ARCH_FILTER} (${HOST_UNAME})${NC}"
+
 echo ""
-echo -e "${YELLOW}==> 1/5 Download template Alpine Linux più recente...${NC}"
+echo -e "${YELLOW}==> 1/5 Download template Alpine Linux per architettura ${ARCH_FILTER}...${NC}"
 pveam update >/dev/null 2>&1 || true
 
-# Ricerca template Alpine più recente (3.21 -> 3.20 -> standard)
-TEMPLATE_NAME=$(pveam available --section system | awk '{print $2}' | grep -E '^alpine-[0-9]+\.[0-9]+' | sort -V | tail -n1)
+# Ricerca template Alpine corrispondente all'architettura dell'host
+TEMPLATE_NAME=$(pveam available --section system | awk '{print $2}' | grep -E "^alpine-[0-9]+\.[0-9]+.*_${ARCH_FILTER}\.tar" | sort -V | tail -n1)
 if [ -z "${TEMPLATE_NAME}" ]; then
-    TEMPLATE_NAME="alpine-3.21-default_20241203_amd64.tar.xz"
+    TEMPLATE_NAME="alpine-3.21-default_20241203_${ARCH_FILTER}.tar.xz"
 fi
 
 # Verifica se già scaricato
@@ -100,8 +109,26 @@ fi
 
 FULL_TEMPLATE="${DEFAULT_TMPL_STORAGE}:vztmpl/${TEMPLATE_NAME}"
 
+# Se il container esiste già (es. tentativo precedente interrotto), chiedi se rimuoverlo
+if pct status "${CTID}" >/dev/null 2>&1; then
+    echo ""
+    echo -e "${YELLOW}Attenzione: il container ${CTID} esiste già sull'host Proxmox.${NC}"
+    read -rp "$(echo -e "${CYAN}Vuoi rimuoverlo e ricrearlo pulito con architettura corretta? [S/n]: ${NC}")" DESTROY_CONFIRM
+    case "$DESTROY_CONFIRM" in
+        [nN][oO]|[nN])
+            echo -e "${RED}Installazione interrotta. Rilancia lo script scegliendo un Container ID libero.${NC}"
+            exit 1
+            ;;
+        *)
+            echo "Rimozione container ${CTID} precedente..."
+            pct stop "${CTID}" >/dev/null 2>&1 || true
+            pct destroy "${CTID}" --purge 1 >/dev/null 2>&1 || true
+            ;;
+    esac
+fi
+
 echo ""
-echo -e "${YELLOW}==> 2/5 Creazione container LXC (ID: ${CTID}, Hostname: ${CT_HOSTNAME})...${NC}"
+echo -e "${YELLOW}==> 2/5 Creazione container LXC (ID: ${CTID}, Hostname: ${CT_HOSTNAME}, Arch: ${ARCH_FILTER})...${NC}"
 
 NET_CONFIG="name=eth0,bridge=${CT_BRIDGE},ip=${CT_IP},firewall=1"
 [ -n "${CT_GW}" ] && NET_CONFIG="${NET_CONFIG},gw=${CT_GW}"
@@ -120,7 +147,12 @@ pct create "${CTID}" "${FULL_TEMPLATE}" \
 
 echo ""
 echo -e "${YELLOW}==> 3/5 Avvio container e attesa connettività...${NC}"
-pct start "${CTID}"
+if ! pct start "${CTID}"; then
+    echo -e "${RED}Errore durante l'avvio del container ${CTID}.${NC}"
+    echo "Diagnostica LXC:"
+    pct start "${CTID}" --debug || true
+    exit 1
+fi
 sleep 3
 
 # Attesa acquisizione rete se DHCP
