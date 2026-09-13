@@ -51,6 +51,9 @@ export class DsvCronService {
     dsvBetaClientFactory,
     loadShipments,
     syncDsvShipments,
+    applyOrderState,
+    syncManualState,
+    notificationService,
     logger = console,
     jitterFn = () => 4000 + Math.floor(Math.random() * 2000),
   }) {
@@ -59,6 +62,9 @@ export class DsvCronService {
     this.dsvBetaClientFactory = dsvBetaClientFactory;
     this.loadShipments = loadShipments;
     this.syncDsvShipments = syncDsvShipments;
+    this.applyOrderState = applyOrderState;
+    this.syncManualState = syncManualState;
+    this.notificationService = notificationService;
     this.logger = logger;
     this.jitterFn = jitterFn;
 
@@ -69,6 +75,8 @@ export class DsvCronService {
     this.nextRunAt = null;
     this.lastRunSummary = null;
     this.activeProgress = null;
+    this.lastSlaCheckAt = 0;
+    this.lastDigestSentDate = null;
   }
 
   start() {
@@ -244,7 +252,47 @@ export class DsvCronService {
 
         // Sincronizza subito la spedizione nel database locale in modo progressivo
         if (results.length) {
-          await this.syncDsvShipments([results[results.length - 1]]);
+          const latestOutcome = results[results.length - 1];
+          await this.syncDsvShipments([latestOutcome]);
+
+          // 1. Auto-allineamento PrestaShop se abilitato per lo stato DSV
+          const mapping = settings?.dsvStateMappings?.[latestOutcome.status];
+          if (mapping?.autoSync && mapping.stateId && candidate.orderId && this.applyOrderState && this.syncManualState) {
+            const currentNormalized = (candidate.currentState || '').trim().toLowerCase();
+            const targetNormalized = (mapping.stateName || '').trim().toLowerCase();
+            const sameId = candidate.prestaStateId && String(candidate.prestaStateId) === String(mapping.stateId);
+            const sameName = currentNormalized && currentNormalized === targetNormalized;
+
+            if (!sameId && !sameName) {
+              try {
+                await this.applyOrderState({ orderId: candidate.orderId, stateId: mapping.stateId });
+                await this.syncManualState({
+                  trackingNumber: candidate.trackingNumber,
+                  orderId: candidate.orderId,
+                  prestaStateId: String(mapping.stateId),
+                  stateName: mapping.stateName,
+                  origin: 'cron-auto-sync',
+                });
+                this.logger.log(`[DSV-CRON] Auto-allineato ordine ${candidate.orderId} allo stato "${mapping.stateName}"`);
+                if (this.notificationService) {
+                  await this.notificationService.notifyAutoSyncSuccess(candidate, mapping.stateName).catch(() => {});
+                }
+              } catch (syncErr) {
+                this.logger.error(`[DSV-CRON] Errore auto-allineamento ordine ${candidate.orderId}:`, syncErr.message);
+              }
+            }
+          }
+
+          // 2. Alert per Eccezioni e Blocchi
+          const isExceptionStatus = latestOutcome.status === 'Eccezione DSV' ||
+            latestOutcome.status === 'Intervento manuale richiesto' ||
+            Boolean(latestOutcome.reasonCode) ||
+            /giacenza|fallit|mancat|rifiut/i.test(latestOutcome.status || '') ||
+            /giacenza|fallit|mancat|rifiut/i.test(latestOutcome.detail || '');
+
+          if (isExceptionStatus && this.notificationService) {
+            await this.notificationService.notifyException(candidate, latestOutcome).catch(() => {});
+          }
         }
 
         this.activeProgress.completed = i + 1;
@@ -253,6 +301,16 @@ export class DsvCronService {
         if (i < candidates.length - 1 && !this.cancelRequested) {
           await new Promise((resolve) => setTimeout(resolve, this.jitterFn()));
         }
+      }
+
+      // 3. Controllo SLA > 48h e Daily Digest a fine scansione
+      if (this.notificationService) {
+        await this.checkSlaBreaches().catch((err) => {
+          this.logger.error('[DSV-CRON] Errore verifica SLA:', err.message);
+        });
+        await this.checkDailyDigest().catch((err) => {
+          this.logger.error('[DSV-CRON] Errore verifica daily digest:', err.message);
+        });
       }
 
       this.lastRunAt = new Date().toISOString();
@@ -278,6 +336,64 @@ export class DsvCronService {
         const intervalMs = Math.max(15, Number(config.intervalMinutes) || 60) * 60_000;
         this.nextRunAt = new Date(Date.now() + intervalMs).toISOString();
       }
+    }
+  }
+
+  async checkSlaBreaches() {
+    const settings = this.getSettings();
+    if (!settings?.notifications?.triggers?.sla48h || !this.notificationService) return;
+
+    const now = Date.now();
+    // Evita di ripetere l'alert SLA più di una volta ogni 24 ore
+    if (this.lastSlaCheckAt && (now - this.lastSlaCheckAt) < 24 * 3600_000) return;
+
+    const db = await this.loadShipments();
+    const records = Object.values(db?.shipments || {});
+    const thresholdMs = 48 * 3600_000;
+
+    const delayed = records.filter((r) => {
+      if (!r || r.archived || r.dsvStatus === 'Consegnata') return false;
+      const refTime = r.dsvCheckedAt ? new Date(r.dsvCheckedAt).getTime() : new Date(r.createdAt || 0).getTime();
+      return (now - refTime) > thresholdMs;
+    });
+
+    if (delayed.length) {
+      this.lastSlaCheckAt = now;
+      await this.notificationService.notifySlaBreach(delayed);
+    }
+  }
+
+  async checkDailyDigest() {
+    const settings = this.getSettings();
+    const triggers = settings?.notifications?.triggers;
+    if (!triggers?.dailyDigest || !this.notificationService) return;
+
+    const now = new Date();
+    const targetHour = Number(triggers.digestHour ?? 8);
+    const targetMinute = Number(triggers.digestMinute ?? 30);
+    const currentHour = now.getHours();
+    const currentMinute = now.getMinutes();
+
+    // Invia se siamo all'interno o oltre la finestra oraria del digest
+    const isDigestTime = (currentHour === targetHour && currentMinute >= targetMinute) || (currentHour > targetHour);
+    const todayKey = now.toISOString().slice(0, 10);
+
+    if (isDigestTime && this.lastDigestSentDate !== todayKey) {
+      const db = await this.loadShipments();
+      const records = Object.values(db?.shipments || {});
+      const totalActive = records.filter((r) => !r.archived && r.dsvStatus !== 'Consegnata').length;
+      const deliveredToday = records.filter((r) => r.dsvStatus === 'Consegnata' && r.dsvCheckedAt && r.dsvCheckedAt.slice(0, 10) === todayKey).length;
+      const exceptions = records.filter((r) => !r.archived && (r.dsvStatus === 'Eccezione DSV' || r.caseStatus === 'Aperta')).length;
+      const thresholdMs = 48 * 3600_000;
+      const delayed = records.filter((r) => !r.archived && r.dsvStatus !== 'Consegnata' && (now.getTime() - new Date(r.dsvCheckedAt || r.createdAt || 0).getTime()) > thresholdMs).length;
+
+      this.lastDigestSentDate = todayKey;
+      await this.notificationService.sendDailyDigest({
+        totalActive,
+        deliveredToday,
+        exceptions,
+        delayed,
+      });
     }
   }
 }

@@ -204,7 +204,7 @@ main[data-active-view="control"] .steps, main[data-active-view="exceptions"] .st
 .state-mapping-card { align-self: start; }
 .state-mapping-card .control-heading { margin-bottom: 0; }
 #state-mapping-form { display: grid; gap: 0; margin-top: 18px; border: 1px solid var(--line-strong); }
-.state-mapping-header, .state-mapping-row { display: grid; grid-template-columns: minmax(220px,.8fr) minmax(280px,1.2fr); gap: 24px; align-items: center; }
+.state-mapping-header, .state-mapping-row { display: grid; grid-template-columns: minmax(190px,.75fr) minmax(240px,1.15fr) minmax(130px,.5fr); gap: 18px; align-items: center; }
 .state-mapping-header { padding: 9px 14px; background: #eef1f5; color: #435a78; font-size: .67rem; font-weight: 800; letter-spacing: .035em; text-transform: uppercase; }
 .state-mapping-row { padding: 10px 14px; border-top: 1px solid var(--line); }
 .state-mapping-row:hover { background: #f8fafc; }
@@ -2822,3 +2822,496 @@ main[data-active-view="control"] .steps, main[data-active-view="exceptions"] .st
   .settings-dashboard .cron-manual-trigger { align-items: stretch; flex-direction: column; }
   .settings-dashboard .cron-manual-trigger button { min-height: 44px; width: 100%; }
 }
+
+/* ==========================================================================
+   Auto-allinea via Cron Toggle
+   ========================================================================== */
+.mapping-autosync-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  font-size: .74rem;
+  font-weight: 650;
+  color: var(--ink);
+}
+.mapping-autosync-toggle input[type="checkbox"] {
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  accent-color: #059669;
+  cursor: pointer;
+}
+.mapping-autosync-toggle input:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.mapping-autosync-toggle:has(input:checked) {
+  color: #059669;
+}
+.autosync-label-text {
+  white-space: nowrap;
+}
+
+/* ==========================================================================
+   Canali di Notifica & Alerting (Telegram & Email)
+   ========================================================================== */
+.notification-settings-card {
+  grid-column: 1 / -1;
+}
+.notification-config-form {
+  display: grid;
+  gap: 16px;
+  margin-top: 16px;
+}
+.notify-channel-card {
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  background: #fff;
+  padding: 16px 20px;
+}
+.notify-channel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 14px;
+}
+.notify-channel-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.notify-icon {
+  width: 26px;
+  height: 26px;
+}
+.notify-icon.telegram { color: #0088cc; }
+.notify-icon.email { color: #d97706; }
+.notify-icon.triggers { color: #059669; }
+.notify-channel-title strong {
+  display: block;
+  font-size: .88rem;
+  color: var(--dsv-navy);
+}
+.notify-channel-title small {
+  display: block;
+  font-size: .70rem;
+  color: var(--muted);
+}
+.notify-channel-fields {
+  display: grid;
+  gap: 12px;
+}
+.grid-2col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.grid-port-ssl {
+  display: grid;
+  grid-template-columns: 100px 1fr;
+  gap: 12px;
+  align-items: end;
+}
+.inline-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: .74rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding-bottom: 8px;
+}
+.notify-channel-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+.notify-triggers-list {
+  display: grid;
+  gap: 10px;
+}
+.trigger-checkbox-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: #fafbfc;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.trigger-checkbox-row:hover {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+.trigger-checkbox-row input[type="checkbox"] {
+  width: 17px;
+  height: 17px;
+  margin-top: 2px;
+  accent-color: #059669;
+  cursor: pointer;
+}
+.trigger-checkbox-row > div {
+  display: grid;
+  gap: 2px;
+}
+.trigger-checkbox-row strong {
+  font-size: .78rem;
+  color: var(--ink);
+}
+.trigger-checkbox-row span {
+  font-size: .70rem;
+  color: var(--muted);
+}
+.digest-time-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 14px;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 2px;
+  margin-top: 6px;
+}
+.digest-time-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: .75rem;
+  font-weight: 700;
+  color: #166534;
+}
+.digest-time-row input[type="number"] {
+  min-height: 30px;
+  padding: 2px 6px;
+  text-align: center;
+}
+.notification-form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+  border: 1px solid var(--line-strong);
+  background: #f8fafc;
+}
+
+@media (max-width: 780px) {
+  .grid-2col { grid-template-columns: 1fr; }
+  .digest-time-row { flex-direction: column; align-items: stretch; }
+  .digest-time-row button { width: 100%; }
+  .notification-form-actions { flex-direction: column; align-items: stretch; }
+  .notification-form-actions button { width: 100%; }
+}
+
+/* ==========================================================================
+   STORICO IMPORTAZIONI & AUDIT LOG REDESIGN
+   ========================================================================== */
+
+.history-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.history-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.history-subnav {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 18px 0 24px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 10px;
+  overflow-x: auto;
+}
+.history-subnav-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: .84rem;
+  font-weight: 650;
+  cursor: pointer;
+  transition: all .15s ease;
+}
+.history-subnav-btn:hover {
+  background: #f1f5f9;
+  color: var(--ink);
+}
+.history-subnav-btn.active {
+  background: #0b1528;
+  color: #fff;
+  border-color: #0b1528;
+}
+.history-badge-count {
+  display: inline-block;
+  padding: 1px 7px;
+  font-size: .70rem;
+  font-weight: 700;
+  border-radius: 10px;
+  background: #e2e8f0;
+  color: #334155;
+}
+.history-subnav-btn.active .history-badge-count {
+  background: #1e293b;
+  color: #f8fafc;
+}
+
+/* Lotti di Importazione (Batch Cards) */
+.batches-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.batch-card {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #fff;
+  padding: 18px 20px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.batch-card:hover {
+  border-color: #cbd5e1;
+  box-shadow: 0 3px 8px rgba(15, 23, 42, 0.06);
+}
+.batch-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.batch-title-group {
+  display: grid;
+  gap: 4px;
+}
+.batch-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.batch-filename {
+  font-size: .95rem;
+  font-weight: 750;
+  color: var(--ink);
+}
+.batch-origin-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: .68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+}
+.batch-origin-badge.excel {
+  background: #ecfdf5;
+  color: #047857;
+  border: 1px solid #a7f3d0;
+}
+.batch-origin-badge.manual {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+}
+.batch-timestamp {
+  font-size: .74rem;
+  color: var(--muted);
+}
+.batch-metrics-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 14px 0 12px;
+  flex-wrap: wrap;
+}
+.metric-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 3px;
+  font-size: .75rem;
+  font-weight: 600;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  color: #334155;
+}
+.metric-chip.consegnate {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+  color: #15803d;
+}
+.metric-chip.in-transito {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1d4ed8;
+}
+.metric-chip.eccezioni {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #b91c1c;
+}
+.metric-chip strong {
+  font-weight: 750;
+}
+.batch-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  border-top: 1px solid #f1f5f9;
+  padding-top: 12px;
+}
+.batch-trackings-drawer {
+  margin-top: 12px;
+  padding: 12px 14px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 3px;
+}
+.batch-trackings-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.tracking-chip-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  border-radius: 3px;
+  font-family: monospace;
+  font-size: .74rem;
+  font-weight: 650;
+  color: #0b1528;
+  cursor: pointer;
+  text-decoration: none;
+  transition: all .12s ease;
+}
+.tracking-chip-link:hover {
+  background: #0b1528;
+  color: #fff;
+  border-color: #0b1528;
+}
+
+/* Audit Log Toolbar & Table */
+.audit-toolbar {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 18px;
+  background: #f8fafc;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+.audit-type-pills {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.audit-pill-btn {
+  padding: 4px 12px;
+  border-radius: 16px;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  font-size: .76rem;
+  font-weight: 650;
+  color: #475569;
+  cursor: pointer;
+  transition: all .12s ease;
+}
+.audit-pill-btn:hover {
+  border-color: #94a3b8;
+  color: #0f172a;
+}
+.audit-pill-btn.active {
+  background: #0b1528;
+  color: #fff;
+  border-color: #0b1528;
+}
+.audit-search-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.audit-search-row input[type="search"] {
+  flex: 1 1 240px;
+  min-height: 34px;
+}
+.audit-search-row select {
+  flex: 0 0 160px;
+  min-height: 34px;
+}
+
+/* Event Type Badge in Audit Table */
+.audit-type-badge {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 3px;
+  font-size: .68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.audit-type-badge.importazione { background: #ecfdf5; color: #047857; }
+.audit-type-badge.dsv { background: #eff6ff; color: #1d4ed8; }
+.audit-type-badge.prestashop { background: #fdf4ff; color: #a21caf; }
+.audit-type-badge.gestione { background: #fefce8; color: #a16207; }
+
+/* Centro di Controllo: Banner Filtro Lotto Attivo */
+.control-batch-filter-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 16px;
+  margin-bottom: 14px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 4px;
+  font-size: .80rem;
+  color: #1e40af;
+}
+.control-batch-filter-banner strong {
+  color: #1e3a8a;
+}
+.control-batch-filter-reset {
+  background: #fff;
+  border: 1px solid #93c5fd;
+  color: #1e40af;
+  padding: 4px 10px;
+  font-size: .74rem;
+  font-weight: 650;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.control-batch-filter-reset:hover {
+  background: #dbeafe;
+}
+

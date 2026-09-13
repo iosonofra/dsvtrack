@@ -350,6 +350,28 @@ function renderControlCenter(data) {
   controlOverview = data;
   dsvStateMappings = data.stateMappings || dsvStateMappings;
   controlRecords = data.records || [];
+  let batchBanner = $('#control-batch-banner');
+  if (activeBatchFilter && activeBatchFilter.trackings) {
+    controlRecords = controlRecords.filter((row) => activeBatchFilter.trackings.has(row.trackingNumber));
+    if (!batchBanner) {
+      batchBanner = document.createElement('div');
+      batchBanner.id = 'control-batch-banner';
+      batchBanner.className = 'control-batch-filter-banner';
+      const tableWrap = $('#control-table')?.closest('.table-wrap');
+      if (tableWrap) tableWrap.parentNode.insertBefore(batchBanner, tableWrap);
+    }
+    if (batchBanner) {
+      batchBanner.hidden = false;
+      batchBanner.innerHTML = `<span>Visualizzazione filtrata per il lotto: <strong>${escapeHtml(activeBatchFilter.filename || 'Lotto')}</strong> (${controlRecords.length} spedizioni nel centro)</span><button type="button" class="control-batch-filter-reset">✕ Rimuovi filtro lotto</button>`;
+      batchBanner.querySelector('.control-batch-filter-reset')?.addEventListener('click', () => {
+        activeBatchFilter = null;
+        batchBanner.remove();
+        void refreshControlCenter();
+      });
+    }
+  } else if (batchBanner) {
+    batchBanner.remove();
+  }
   const totalPages = Math.max(1, Math.ceil(controlRecords.length / CONTROL_PAGE_SIZE));
   controlPage = Math.min(controlPage, totalPages);
   const pageRecords = controlRecords.slice((controlPage - 1) * CONTROL_PAGE_SIZE, controlPage * CONTROL_PAGE_SIZE);
@@ -1102,8 +1124,156 @@ function setupWorkspace() {
   });
   const stateMapping = document.createElement('section');
   stateMapping.className = 'card workspace-view state-mapping-card'; stateMapping.dataset.view = 'settings'; stateMapping.id = 'state-mapping-view';
-  stateMapping.innerHTML = '<div class="control-heading"><div><p class="eyebrow">ALLINEAMENTO</p><h2>Mappatura stati DSV → PrestaShop</h2><p>Definisci lo stato ordine atteso per ogni esito DSV. I nuovi stati rilevati da Camoufox compariranno automaticamente qui.</p></div></div><form id="state-mapping-form"><div class="state-mapping-header"><span>Stato DSV rilevato</span><span>Stato PrestaShop corrispondente</span></div><div id="state-mapping-rows" class="state-mapping-rows"><p class="control-empty">Apri la configurazione per caricare gli stati.</p></div><div class="state-mapping-actions"><p id="state-mapping-message" class="message" aria-live="polite"></p><button id="save-state-mappings" type="submit">Salva mappatura</button></div></form>';
+  stateMapping.innerHTML = '<div class="control-heading"><div><p class="eyebrow">ALLINEAMENTO</p><h2>Mappatura stati DSV → PrestaShop</h2><p>Definisci lo stato ordine atteso per ogni esito DSV. I nuovi stati rilevati da Camoufox compariranno automaticamente qui.</p></div></div><form id="state-mapping-form"><div class="state-mapping-header"><span>Stato DSV rilevato</span><span>Stato PrestaShop corrispondente</span><span>Auto-allinea via Cron</span></div><div id="state-mapping-rows" class="state-mapping-rows"><p class="control-empty">Apri la configurazione per caricare gli stati.</p></div><div class="state-mapping-actions"><p id="state-mapping-message" class="message" aria-live="polite"></p><button id="save-state-mappings" type="submit">Salva mappatura</button></div></form>';
   main.append(stateMapping);
+
+  const notificationCard = document.createElement('section');
+  notificationCard.className = 'card settings-card notification-settings-card';
+  notificationCard.id = 'notification-settings-view';
+  notificationCard.innerHTML = `
+    <div class="control-heading">
+      <div>
+        <p class="eyebrow">ALERTING &amp; MONITORAGGIO</p>
+        <h2>Canali di Notifica &amp; Alerting</h2>
+        <p>Configura Bot Telegram ed Email SMTP per ricevere avvisi istantanei su blocchi, SLA e riepiloghi giornalieri.</p>
+      </div>
+    </div>
+    <form id="notification-config-form" class="notification-config-form">
+      <div class="notify-channel-card">
+        <div class="notify-channel-header">
+          <div class="notify-channel-title">
+            <svg class="notify-icon telegram" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69.01-.03.01-.14-.07-.19-.08-.05-.19-.02-.27 0-.12.03-1.99 1.27-5.63 3.73-.53.36-1.02.54-1.45.53-.48-.01-1.4-.27-2.09-.49-.84-.27-1.51-.42-1.45-.89.03-.25.38-.51 1.05-.78 4.12-1.79 6.87-2.97 8.24-3.55 3.93-1.65 4.74-1.94 5.27-1.95.12 0 .37.03.54.17.14.12.18.28.2.45-.02.07-.02.19-.04.34z"/></svg>
+            <div>
+              <strong>Bot Telegram</strong>
+              <small>Notifiche push istantanee su smartphone o gruppo</small>
+            </div>
+          </div>
+          <label class="mapping-autosync-toggle">
+            <input id="notify-tg-enabled" type="checkbox">
+            <span class="autosync-label-text">Attivo</span>
+          </label>
+        </div>
+        <div class="notify-channel-fields">
+          <div class="grid-2col">
+            <label>Bot Token
+              <input id="notify-tg-token" type="password" placeholder="es. 123456789:ABCdefGhIJKlmNoPQRstuVWXyz" autocomplete="off">
+            </label>
+            <label>Chat ID o Canale
+              <input id="notify-tg-chatid" type="text" placeholder="es. 987654321 o @tuocanale" autocomplete="off">
+            </label>
+          </div>
+          <div class="notify-channel-actions">
+            <button id="test-tg-btn" type="button" class="secondary">Invia test Telegram</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="notify-channel-card">
+        <div class="notify-channel-header">
+          <div class="notify-channel-title">
+            <svg class="notify-icon email" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+            <div>
+              <strong>Email SMTP</strong>
+              <small>Avvisi verso caselle operative o di ticketing</small>
+            </div>
+          </div>
+          <label class="mapping-autosync-toggle">
+            <input id="notify-email-enabled" type="checkbox">
+            <span class="autosync-label-text">Attivo</span>
+          </label>
+        </div>
+        <div class="notify-channel-fields">
+          <div class="grid-2col">
+            <label>Host SMTP
+              <input id="notify-email-host" type="text" placeholder="es. mail.tuodominio.it">
+            </label>
+            <div class="grid-port-ssl">
+              <label>Porta
+                <input id="notify-email-port" type="number" value="587" placeholder="587">
+              </label>
+              <label class="inline-checkbox">
+                <input id="notify-email-secure" type="checkbox"> SSL/TLS (465)
+              </label>
+            </div>
+          </div>
+          <div class="grid-2col">
+            <label>Username / Account
+              <input id="notify-email-user" type="text" placeholder="utente@tuodominio.it" autocomplete="off">
+            </label>
+            <label>Password SMTP
+              <input id="notify-email-pass" type="password" placeholder="••••••••" autocomplete="off">
+            </label>
+          </div>
+          <div class="grid-2col">
+            <label>Mittente (From)
+              <input id="notify-email-from" type="email" placeholder="logistica@tuodominio.it">
+            </label>
+            <label>Destinatari (To)
+              <input id="notify-email-to" type="text" placeholder="operativo@tuodominio.it, ticket@tuodominio.it">
+            </label>
+          </div>
+          <div class="notify-channel-actions">
+            <button id="test-email-btn" type="button" class="secondary">Invia test Email</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="notify-channel-card triggers-card">
+        <div class="notify-channel-header">
+          <div class="notify-channel-title">
+            <svg class="notify-icon triggers" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+            <div>
+              <strong>Regole di Invio &amp; Trigger</strong>
+              <small>Decidi quali eventi devono generare notifiche</small>
+            </div>
+          </div>
+        </div>
+        <div class="notify-triggers-list">
+          <label class="trigger-checkbox-row">
+            <input id="trigger-exceptions" type="checkbox" checked>
+            <div>
+              <strong>Alert Eccezioni &amp; Giacenze immediate</strong>
+              <span>Invia subito un messaggio quando DSV segnala un blocco, destinatario assente o anomalia.</span>
+            </div>
+          </label>
+          <label class="trigger-checkbox-row">
+            <input id="trigger-sla" type="checkbox" checked>
+            <div>
+              <strong>Allarme SLA (Spedizioni ferme da &gt; 48h)</strong>
+              <span>Segnala le spedizioni in viaggio o in transito che non registrano avanzamenti da oltre 48 ore.</span>
+            </div>
+          </label>
+          <label class="trigger-checkbox-row">
+            <input id="trigger-autosync" type="checkbox">
+            <div>
+              <strong>Auto-allineamenti riusciti su PrestaShop</strong>
+              <span>Conferma ogni cambio di stato applicato automaticamente dal Cron in background.</span>
+            </div>
+          </label>
+          <label class="trigger-checkbox-row">
+            <input id="trigger-digest" type="checkbox" checked>
+            <div>
+              <strong>Digest riepilogativo mattutino</strong>
+              <span>Report sintetico programmato ogni mattina con totale spedizioni attive, consegnate ed eccezioni.</span>
+            </div>
+          </label>
+          <div class="digest-time-row" id="digest-time-row">
+            <label>Orario invio digest:
+              <input id="trigger-digest-hour" type="number" min="0" max="23" value="8" style="width:55px;"> :
+              <input id="trigger-digest-minute" type="number" min="0" max="59" value="30" style="width:55px;">
+            </label>
+            <button id="trigger-digest-test-btn" type="button" class="secondary" title="Invia subito il digest di prova">Invia digest adesso</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="notification-form-actions">
+        <p id="notification-config-message" class="message" aria-live="polite"></p>
+        <button id="save-notifications-btn" type="submit">Salva impostazioni notifiche</button>
+      </div>
+    </form>
+  `;
+
   const settingsDashboard = document.createElement('div');
   settingsDashboard.className = 'workspace-view settings-dashboard';
   settingsDashboard.dataset.view = 'settings';
@@ -1115,7 +1285,7 @@ function setupWorkspace() {
   const cronCard = $('.cron-card');
   const importCard = $('.import-card');
   const dsvBetaCard = $('#dsv-beta');
-  const settingsCards = [connectionCard, catalogCard, dsvBetaCard, backupCard, cronCard, stateMapping].filter(Boolean);
+  const settingsCards = [connectionCard, catalogCard, dsvBetaCard, backupCard, cronCard, stateMapping, notificationCard].filter(Boolean);
 
   settingsCards.forEach((card) => {
     card.classList.remove('workspace-view');
@@ -1191,7 +1361,80 @@ function setupWorkspace() {
   main.append(settingsDashboard);
   const history = document.createElement('section');
   history.className = 'card workspace-view'; history.dataset.view = 'history'; history.id = 'history-view'; history.hidden = true;
-  history.innerHTML = '<div class="control-heading"><div><p class="eyebrow">TRACCIABILITÀ</p><h2>Storico importazioni</h2><p>Registro locale delle righe elaborate nelle sessioni precedenti.</p></div><button id="refresh-history" type="button" class="secondary">Aggiorna storico</button></div><div class="table-wrap"><table id="history-table"><thead><tr><th>Data</th><th>Tracking</th><th>Riferimento ordine</th><th>Esito</th><th>Dettaglio</th></tr></thead><tbody><tr><td colspan="5" class="control-empty">Nessuna importazione registrata.</td></tr></tbody></table></div>';
+  history.innerHTML = `
+    <div class="control-heading history-heading">
+      <div>
+        <p class="eyebrow">TRACCIABILITÀ & AUDIT</p>
+        <h2>Storico & Registro Operazioni</h2>
+        <p>Monitora i lotti di importazione e consulta l'audit log completo di tutti gli eventi di sistema.</p>
+      </div>
+      <div class="history-heading-actions">
+        <button id="refresh-history" type="button" class="secondary">
+          <svg viewBox="0 0 20 20" width="15" height="15" fill="currentColor"><path fill-rule="evenodd" d="M4 2a1 1 0 0 1 1 1v2.101a7.002 7.002 0 0 1 11.601 2.566 1 1 0 1 1-1.885.666A5.002 5.002 0 0 0 5.999 7H9a1 1 0 0 1 0 2H4a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1zm.008 9.047a1 1 0 0 1 1.885-.666A5.002 5.002 0 0 0 14.001 13H11a1 1 0 1 1 0-2h5a1 1 0 0 1 1 1v5a1 1 0 1 1-2 0v-2.101a7.002 7.002 0 0 1-11.601-2.566 1 1 0 0 1-.392-.286z" clip-rule="evenodd"/></svg>
+          Aggiorna
+        </button>
+      </div>
+    </div>
+    <div class="history-subnav" role="tablist">
+      <button type="button" class="history-subnav-btn active" data-subtab="batches" role="tab" aria-selected="true">
+        <svg viewBox="0 0 20 20" width="16" height="16" fill="currentColor"><path d="M2 6a2 2 0 0 1 2-2h5l2 2h5a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6z"/></svg>
+        <span>Lotti di Importazione</span>
+        <span class="history-badge-count" id="batches-count-badge">0</span>
+      </button>
+      <button type="button" class="history-subnav-btn" data-subtab="audit" role="tab" aria-selected="false">
+        <svg viewBox="0 0 20 20" width="16" height="16" fill="currentColor"><path fill-rule="evenodd" d="M4 4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4zm3 1.5a.5.5 0 0 0 0 1h6a.5.5 0 0 0 0-1H7zm0 3a.5.5 0 0 0 0 1h6a.5.5 0 0 0 0-1H7zm0 3a.5.5 0 0 0 0 1h4a.5.5 0 0 0 0-1H7z" clip-rule="evenodd"/></svg>
+        <span>Audit Log Operativo</span>
+        <span class="history-badge-count" id="audit-count-badge">0</span>
+      </button>
+    </div>
+    <div id="history-batches-tab" class="history-tab-pane active">
+      <div class="batches-container" id="batches-list">
+        <div class="control-empty">Caricamento storico lotti…</div>
+      </div>
+    </div>
+    <div id="history-audit-tab" class="history-tab-pane" hidden>
+      <div class="audit-toolbar">
+        <div class="audit-type-pills" id="audit-type-filters">
+          <button type="button" class="audit-pill-btn active" data-type="">Tutti gli eventi</button>
+          <button type="button" class="audit-pill-btn" data-type="importazione">📥 Importazioni</button>
+          <button type="button" class="audit-pill-btn" data-type="dsv">🚚 Scansioni DSV</button>
+          <button type="button" class="audit-pill-btn" data-type="prestashop">🔄 PrestaShop</button>
+          <button type="button" class="audit-pill-btn" data-type="gestione">📦 Gestione & Note</button>
+        </div>
+        <div class="audit-search-row">
+          <input type="search" id="audit-search-input" placeholder="Cerca per tracking, ordine o dettaglio…">
+          <select id="audit-date-filter" aria-label="Periodo temporale">
+            <option value="">Tutto il periodo</option>
+            <option value="today">Oggi</option>
+            <option value="7d">Ultimi 7 giorni</option>
+            <option value="30d">Ultimi 30 giorni</option>
+          </select>
+          <button id="export-audit-csv-btn" type="button" class="secondary">
+            <svg viewBox="0 0 20 20" width="15" height="15" fill="currentColor"><path fill-rule="evenodd" d="M3 17a1 1 0 0 1 1-1h12a1 1 0 1 1 0 2H4a1 1 0 0 1-1-1zm3.293-7.707a1 1 0 0 1 1.414 0L9 10.586V3a1 1 0 1 1 2 0v7.586l1.293-1.293a1 1 0 1 1 1.414 1.414l-3 3a1 1 0 0 1-1.414 0l-3-3a1 1 0 0 1 0-1.414z" clip-rule="evenodd"/></svg>
+            Esporta CSV
+          </button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table id="audit-log-table">
+          <thead>
+            <tr>
+              <th>Data/Ora</th>
+              <th>Tipo</th>
+              <th>Tracking</th>
+              <th>Riferimento Ordine</th>
+              <th>Stato DSV</th>
+              <th>Azione / Esito</th>
+              <th>Dettaglio</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td colspan="7" class="control-empty">Caricamento eventi in corso…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
   main.append(history);
   const icons = {
     control: '<svg viewBox="0 0 24 24"><path d="M4 5h16v14H4zM4 10h16M9 10v9"/></svg>',
@@ -1211,6 +1454,8 @@ function setupWorkspace() {
   $('#state-mapping-form').addEventListener('submit', saveStateMappings);
   setupBackupRestore();
   setupCronSection();
+  setupNotificationSection();
+  setupHistorySection();
   const helpDialog = $('#help-dialog');
   if (helpDialog) {
     $('#topbar-help-btn')?.addEventListener('click', () => {
@@ -1834,6 +2079,7 @@ function showView(requestedView) {
     if ($('#dsv-beta')) $('#dsv-beta').hidden = false;
     void loadStateMappings();
     void loadCronStatus();
+    void loadNotificationSettings();
   }
 }
 
@@ -1853,9 +2099,42 @@ async function loadStateMappings() {
     });
     rows.innerHTML = statuses.map((status) => {
       const mapping = dsvStateMappings[status];
+      const hasMapping = Boolean(mapping?.stateId);
+      const isAutoSync = Boolean(mapping?.autoSync);
       const options = prestaShopStateCatalog.map((state) => `<option value="${escapeHtml(state.id)}" ${String(mapping?.stateId || '') === String(state.id) ? 'selected' : ''}>${escapeHtml(state.name)}</option>`).join('');
-      return `<label class="state-mapping-row"><span><strong>${escapeHtml(status)}</strong><small>${Number(overview.dsvCounts?.[status] || 0)} spedizioni rilevate</small></span><select class="dsv-mapping-select" data-dsv-status="${escapeHtml(status)}"><option value="">Nessuna associazione</option>${options}</select></label>`;
+      return `
+        <div class="state-mapping-row">
+          <span>
+            <strong>${escapeHtml(status)}</strong>
+            <small>${Number(overview.dsvCounts?.[status] || 0)} spedizioni rilevate</small>
+          </span>
+          <select class="dsv-mapping-select" data-dsv-status="${escapeHtml(status)}">
+            <option value="">Nessuna associazione</option>
+            ${options}
+          </select>
+          <label class="mapping-autosync-toggle" title="Se abilitato, il Cron allinea automaticamente l'ordine PrestaShop a questo stato quando DSV lo rileva">
+            <input type="checkbox" class="dsv-mapping-autosync" data-dsv-status="${escapeHtml(status)}" ${isAutoSync ? 'checked' : ''} ${hasMapping ? '' : 'disabled'}>
+            <span class="autosync-label-text">Auto-sync Cron</span>
+          </label>
+        </div>
+      `;
     }).join('');
+
+    rows.querySelectorAll('.dsv-mapping-select').forEach((select) => {
+      select.addEventListener('change', () => {
+        const row = select.closest('.state-mapping-row');
+        const autoSyncInput = row?.querySelector('.dsv-mapping-autosync');
+        if (autoSyncInput) {
+          if (!select.value) {
+            autoSyncInput.checked = false;
+            autoSyncInput.disabled = true;
+          } else {
+            autoSyncInput.disabled = false;
+          }
+        }
+      });
+    });
+
     tell('#state-mapping-message', `${Object.keys(dsvStateMappings).length} associazioni configurate.`);
   } catch (error) {
     rows.innerHTML = `<p class="control-empty">${escapeHtml(error.message)}</p>`;
@@ -1870,22 +2149,421 @@ async function saveStateMappings(event) {
     const mappings = {};
     document.querySelectorAll('.dsv-mapping-select').forEach((select) => {
       const state = prestaShopStateCatalog?.find((item) => String(item.id) === select.value);
-      if (state) mappings[select.dataset.dsvStatus] = { stateId: String(state.id), stateName: state.name };
+      const status = select.dataset.dsvStatus;
+      const autoSyncCheck = document.querySelector(`.dsv-mapping-autosync[data-dsv-status="${CSS.escape(status)}"]`);
+      if (state) {
+        mappings[status] = {
+          stateId: String(state.id),
+          stateName: state.name,
+          autoSync: Boolean(autoSyncCheck?.checked),
+        };
+      }
     });
     const result = await request('/api/dsv-state-mappings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mappings }) });
     dsvStateMappings = result.mappings || {};
     tell('#state-mapping-message', result.message, 'success');
+    showFloatingToast('Mappature DSV salvate con successo!', 'success');
     if (controlOverview.records?.length) renderControlCenter({ ...controlOverview, stateMappings: dsvStateMappings });
   } catch (error) { tell('#state-mapping-message', error.message, 'error'); }
   finally { button.disabled = false; }
 }
 
-async function renderImportHistory() {
+async function loadNotificationSettings() {
   try {
-    const data = await request('/api/control-center');
-    const events = data.records.flatMap((record) => (record.events || []).filter((event) => event.type === 'importazione').map((event) => ({ ...event, trackingNumber: record.trackingNumber, orderReference: record.orderReference }))).sort((a, b) => String(b.at).localeCompare(String(a.at)));
-    $('#history-table tbody').innerHTML = events.length ? events.map((event) => `<tr><td>${displayDateTime(event.at)}</td><td><strong>${escapeHtml(event.trackingNumber)}</strong></td><td>${escapeHtml(event.orderReference || '—')}</td><td>${escapeHtml(event.label)}</td><td>${escapeHtml(event.detail || '—')}</td></tr>`).join('') : '<tr><td colspan="5" class="control-empty">Nessuna importazione registrata.</td></tr>';
-  } catch (e) { $('#history-table tbody').innerHTML = `<tr><td colspan="5" class="control-empty">${escapeHtml(e.message)}</td></tr>`; }
+    const data = await request('/api/notifications/config');
+    const n = data.notifications || {};
+    const tg = n.telegram || {};
+    const em = n.email || {};
+    const tr = n.triggers || {};
+
+    if ($('#notify-tg-enabled')) $('#notify-tg-enabled').checked = Boolean(tg.enabled);
+    if ($('#notify-tg-token')) $('#notify-tg-token').value = tg.botToken || '';
+    if ($('#notify-tg-chatid')) $('#notify-tg-chatid').value = tg.chatId || '';
+
+    if ($('#notify-email-enabled')) $('#notify-email-enabled').checked = Boolean(em.enabled);
+    if ($('#notify-email-host')) $('#notify-email-host').value = em.host || '';
+    if ($('#notify-email-port')) $('#notify-email-port').value = em.port || 587;
+    if ($('#notify-email-secure')) $('#notify-email-secure').checked = Boolean(em.secure);
+    if ($('#notify-email-user')) $('#notify-email-user').value = em.user || '';
+    if ($('#notify-email-pass')) $('#notify-email-pass').value = em.pass || '';
+    if ($('#notify-email-from')) $('#notify-email-from').value = em.from || '';
+    if ($('#notify-email-to')) $('#notify-email-to').value = em.to || '';
+
+    if ($('#trigger-exceptions')) $('#trigger-exceptions').checked = tr.exceptions !== false;
+    if ($('#trigger-sla')) $('#trigger-sla').checked = tr.sla48h !== false;
+    if ($('#trigger-autosync')) $('#trigger-autosync').checked = Boolean(tr.autoSyncSuccess);
+    if ($('#trigger-digest')) $('#trigger-digest').checked = tr.dailyDigest !== false;
+    if ($('#trigger-digest-hour')) $('#trigger-digest-hour').value = tr.digestHour ?? 8;
+    if ($('#trigger-digest-minute')) $('#trigger-digest-minute').value = tr.digestMinute ?? 30;
+  } catch (err) {
+    console.error('[NOTIFICATIONS] Errore caricamento impostazioni:', err);
+  }
+}
+
+function setupNotificationSection() {
+  const form = $('#notification-config-form');
+  const msg = $('#notification-config-message');
+  const saveBtn = $('#save-notifications-btn');
+  const testTgBtn = $('#test-tg-btn');
+  const testEmailBtn = $('#test-email-btn');
+  const testDigestBtn = $('#trigger-digest-test-btn');
+
+  form?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (saveBtn) saveBtn.disabled = true;
+    if (msg) { msg.className = 'message'; msg.textContent = 'Salvataggio in corso…'; }
+
+    try {
+      const payload = {
+        telegram: {
+          enabled: $('#notify-tg-enabled')?.checked,
+          botToken: $('#notify-tg-token')?.value?.trim(),
+          chatId: $('#notify-tg-chatid')?.value?.trim(),
+        },
+        email: {
+          enabled: $('#notify-email-enabled')?.checked,
+          host: $('#notify-email-host')?.value?.trim(),
+          port: Number($('#notify-email-port')?.value) || 587,
+          secure: $('#notify-email-secure')?.checked,
+          user: $('#notify-email-user')?.value?.trim(),
+          pass: $('#notify-email-pass')?.value || '',
+          from: $('#notify-email-from')?.value?.trim(),
+          to: $('#notify-email-to')?.value?.trim(),
+        },
+        triggers: {
+          exceptions: $('#trigger-exceptions')?.checked,
+          sla48h: $('#trigger-sla')?.checked,
+          autoSyncSuccess: $('#trigger-autosync')?.checked,
+          dailyDigest: $('#trigger-digest')?.checked,
+          digestHour: Number($('#trigger-digest-hour')?.value) || 8,
+          digestMinute: Number($('#trigger-digest-minute')?.value) || 30,
+        },
+      };
+
+      const res = await request('/api/notifications/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (msg) { msg.className = 'message success'; msg.textContent = res.message || 'Impostazioni salvate con successo!'; }
+      showFloatingToast('Impostazioni notifiche salvate!', 'success');
+    } catch (err) {
+      if (msg) { msg.className = 'message error'; msg.textContent = `Errore: ${err.message}`; }
+    } finally {
+      if (saveBtn) saveBtn.disabled = false;
+    }
+  });
+
+  testTgBtn?.addEventListener('click', async () => {
+    testTgBtn.disabled = true;
+    const orig = testTgBtn.textContent;
+    testTgBtn.textContent = 'Invio in corso…';
+    try {
+      const payload = {
+        enabled: true,
+        botToken: $('#notify-tg-token')?.value?.trim(),
+        chatId: $('#notify-tg-chatid')?.value?.trim(),
+      };
+      const res = await request('/api/notifications/test-telegram', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      showFloatingToast('Messaggio di prova Telegram inviato!', 'success');
+      alert(res.message || 'Messaggio inviato!');
+    } catch (err) {
+      alert(`Test Telegram fallito: ${err.message}`);
+    } finally {
+      testTgBtn.disabled = false;
+      testTgBtn.textContent = orig;
+    }
+  });
+
+  testEmailBtn?.addEventListener('click', async () => {
+    testEmailBtn.disabled = true;
+    const orig = testEmailBtn.textContent;
+    testEmailBtn.textContent = 'Invio in corso…';
+    try {
+      const payload = {
+        enabled: true,
+        host: $('#notify-email-host')?.value?.trim(),
+        port: Number($('#notify-email-port')?.value) || 587,
+        secure: $('#notify-email-secure')?.checked,
+        user: $('#notify-email-user')?.value?.trim(),
+        pass: $('#notify-email-pass')?.value || '',
+        from: $('#notify-email-from')?.value?.trim(),
+        to: $('#notify-email-to')?.value?.trim(),
+      };
+      const res = await request('/api/notifications/test-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      showFloatingToast('Email di prova inviata!', 'success');
+      alert(res.message || 'Email inviata!');
+    } catch (err) {
+      alert(`Test Email fallito: ${err.message}`);
+    } finally {
+      testEmailBtn.disabled = false;
+      testEmailBtn.textContent = orig;
+    }
+  });
+
+  testDigestBtn?.addEventListener('click', async () => {
+    testDigestBtn.disabled = true;
+    const orig = testDigestBtn.textContent;
+    testDigestBtn.textContent = 'Generazione…';
+    try {
+      const res = await request('/api/notifications/trigger-digest', { method: 'POST' });
+      showFloatingToast(res.message || 'Digest inviato!', 'success');
+    } catch (err) {
+      alert(`Errore invio digest: ${err.message}`);
+    } finally {
+      testDigestBtn.disabled = false;
+      testDigestBtn.textContent = orig;
+    }
+  });
+}
+
+let activeHistorySubtab = 'batches';
+let auditTypeFilter = '';
+let auditSearchQuery = '';
+let auditDateFilter = '';
+let activeBatchFilter = null;
+let currentImportFileName = 'File Excel';
+let currentImportOrigin = 'excel';
+let auditSearchDebounceTimer = null;
+
+function setupHistorySection() {
+  const subnavBtns = document.querySelectorAll('.history-subnav-btn');
+  const batchesTab = $('#history-batches-tab');
+  const auditTab = $('#history-audit-tab');
+
+  subnavBtns.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      subnavBtns.forEach((b) => {
+        b.classList.remove('active');
+        b.setAttribute('aria-selected', 'false');
+      });
+      btn.classList.add('active');
+      btn.setAttribute('aria-selected', 'true');
+
+      activeHistorySubtab = btn.dataset.subtab || 'batches';
+      if (activeHistorySubtab === 'batches') {
+        if (batchesTab) { batchesTab.hidden = false; batchesTab.classList.add('active'); }
+        if (auditTab) { auditTab.hidden = true; auditTab.classList.remove('active'); }
+        void loadHistoryBatches();
+      } else {
+        if (auditTab) { auditTab.hidden = false; auditTab.classList.add('active'); }
+        if (batchesTab) { batchesTab.hidden = true; batchesTab.classList.remove('active'); }
+        void loadAuditLog();
+      }
+    });
+  });
+
+  const pillBtns = document.querySelectorAll('.audit-pill-btn');
+  pillBtns.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      pillBtns.forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      auditTypeFilter = btn.dataset.type || '';
+      void loadAuditLog();
+    });
+  });
+
+  $('#audit-search-input')?.addEventListener('input', (event) => {
+    clearTimeout(auditSearchDebounceTimer);
+    auditSearchDebounceTimer = setTimeout(() => {
+      auditSearchQuery = event.target.value.trim();
+      void loadAuditLog();
+    }, 250);
+  });
+
+  $('#audit-date-filter')?.addEventListener('change', (event) => {
+    auditDateFilter = event.target.value;
+    void loadAuditLog();
+  });
+
+  $('#export-audit-csv-btn')?.addEventListener('click', () => {
+    const params = new URLSearchParams();
+    if (auditTypeFilter) params.set('type', auditTypeFilter);
+    if (auditSearchQuery) params.set('query', auditSearchQuery);
+    if (auditDateFilter === 'today') {
+      params.set('dateFrom', new Date().toISOString().slice(0, 10));
+    } else if (auditDateFilter === '7d') {
+      params.set('dateFrom', new Date(Date.now() - 7 * 24 * 3600_000).toISOString().slice(0, 10));
+    } else if (auditDateFilter === '30d') {
+      params.set('dateFrom', new Date(Date.now() - 30 * 24 * 3600_000).toISOString().slice(0, 10));
+    }
+    window.location.href = `/api/history/audit-log/export?${params.toString()}`;
+  });
+}
+
+async function renderImportHistory() {
+  if (activeHistorySubtab === 'batches') {
+    await loadHistoryBatches();
+  } else {
+    await loadAuditLog();
+  }
+  try {
+    if (activeHistorySubtab === 'batches') {
+      const auditRes = await request('/api/history/audit-log?limit=1');
+      const badge = $('#audit-count-badge');
+      if (badge && auditRes.total !== undefined) badge.textContent = auditRes.total;
+    } else {
+      const batches = await request('/api/history/batches');
+      const badge = $('#batches-count-badge');
+      if (badge && batches) badge.textContent = batches.length;
+    }
+  } catch { /* silenzioso */ }
+}
+
+async function loadHistoryBatches() {
+  const container = $('#batches-list');
+  if (!container) return;
+  container.innerHTML = '<div class="control-empty">Caricamento lotti in corso…</div>';
+  try {
+    const batches = await request('/api/history/batches');
+    const badge = $('#batches-count-badge');
+    if (badge) badge.textContent = batches.length;
+    if (!batches.length) {
+      container.innerHTML = '<div class="control-empty">Nessun lotto di importazione registrato.</div>';
+      return;
+    }
+    container.innerHTML = batches.map((batch) => {
+      const originClass = batch.origin === 'manual' ? 'manual' : 'excel';
+      const originLabel = batch.origin === 'manual' ? '✍️ Manuale' : '📥 File Excel';
+      const trackings = Array.isArray(batch.trackingNumbers) ? batch.trackingNumbers : [];
+      return `
+        <article class="batch-card" data-batch-id="${escapeHtml(batch.id)}">
+          <header class="batch-card-header">
+            <div class="batch-title-group">
+              <div class="batch-title-row">
+                <span class="batch-origin-badge ${originClass}">${originLabel}</span>
+                <span class="batch-filename">${escapeHtml(batch.filename)}</span>
+              </div>
+              <time class="batch-timestamp">${displayDateTime(batch.at)}</time>
+            </div>
+          </header>
+          <div class="batch-metrics-row">
+            <span class="metric-chip">Totale colli: <strong>${batch.totalRows || trackings.length}</strong></span>
+            <span class="metric-chip">Nuove: <strong>${batch.newCount || 0}</strong></span>
+            ${batch.skippedCount ? `<span class="metric-chip">Saltate duplicate: <strong>${batch.skippedCount}</strong></span>` : ''}
+            <span class="metric-chip consegnate">Consegnate: <strong>${batch.stats?.consegnate || 0}</strong></span>
+            <span class="metric-chip in-transito">In movimento: <strong>${batch.stats?.inTransito || 0}</strong></span>
+            ${batch.stats?.eccezioni ? `<span class="metric-chip eccezioni">Eccezioni: <strong>${batch.stats?.eccezioni}</strong></span>` : ''}
+          </div>
+          <div class="batch-card-actions">
+            <button type="button" class="secondary batch-filter-control-btn" data-batch-id="${escapeHtml(batch.id)}">
+              <svg viewBox="0 0 20 20" width="14" height="14" fill="currentColor"><path fill-rule="evenodd" d="M8 4a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM2 8a6 6 0 1 1 10.89 3.476l4.817 4.817a1 1 0 0 1-1.414 1.414l-4.816-4.816A6 6 0 0 1 2 8z" clip-rule="evenodd"/></svg>
+              Vedi nel Centro di Controllo
+            </button>
+            <a class="secondary button-link" href="/api/history/batches/${encodeURIComponent(batch.id)}/export" download="lotto-${escapeHtml(batch.id)}.csv">
+              <svg viewBox="0 0 20 20" width="14" height="14" fill="currentColor"><path fill-rule="evenodd" d="M3 17a1 1 0 0 1 1-1h12a1 1 0 1 1 0 2H4a1 1 0 0 1-1-1zm3.293-7.707a1 1 0 0 1 1.414 0L9 10.586V3a1 1 0 1 1 2 0v7.586l1.293-1.293a1 1 0 1 1 1.414 1.414l-3 3a1 1 0 0 1-1.414 0l-3-3a1 1 0 0 1 0-1.414z" clip-rule="evenodd"/></svg>
+              Esporta CSV
+            </a>
+            <button type="button" class="secondary batch-toggle-chips-btn" data-batch-id="${escapeHtml(batch.id)}" data-count="${trackings.length}">
+              Colli (${trackings.length}) ▾
+            </button>
+          </div>
+          <div class="batch-trackings-drawer" id="drawer-${escapeHtml(batch.id)}" hidden>
+            <small style="color: var(--muted); font-weight: 600;">Clicca su un tracking per aprire il dettaglio spedizione:</small>
+            <div class="batch-trackings-grid">
+              ${trackings.map((t) => `<button type="button" class="tracking-chip-link open-batch-chip" data-tracking="${escapeHtml(t)}">${escapeHtml(t)}</button>`).join('')}
+            </div>
+          </div>
+        </article>
+      `;
+    }).join('');
+
+    container.querySelectorAll('.batch-filter-control-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const batchId = btn.dataset.batchId;
+        const b = batches.find((item) => item.id === batchId);
+        if (!b) return;
+        activeBatchFilter = {
+          id: b.id,
+          filename: b.filename,
+          trackings: new Set(b.trackingNumbers || []),
+        };
+        location.hash = 'control';
+      });
+    });
+
+    container.querySelectorAll('.batch-toggle-chips-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const batchId = btn.dataset.batchId;
+        const drawer = $(`#drawer-${CSS.escape(batchId)}`);
+        if (drawer) {
+          drawer.hidden = !drawer.hidden;
+          const count = btn.dataset.count || '0';
+          btn.textContent = drawer.hidden ? `Colli (${count}) ▾` : `Nascondi colli ▴`;
+        }
+      });
+    });
+
+    container.querySelectorAll('.open-batch-chip').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const trk = btn.dataset.tracking;
+        if (trk) void openShipmentDetail(trk);
+      });
+    });
+  } catch (err) {
+    container.innerHTML = `<div class="control-empty">Errore caricamento lotti: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+async function loadAuditLog() {
+  const tbody = $('#audit-log-table tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="7" class="control-empty">Caricamento eventi in corso…</td></tr>';
+
+  const params = new URLSearchParams();
+  if (auditTypeFilter) params.set('type', auditTypeFilter);
+  if (auditSearchQuery) params.set('query', auditSearchQuery);
+
+  if (auditDateFilter === 'today') {
+    params.set('dateFrom', new Date().toISOString().slice(0, 10));
+  } else if (auditDateFilter === '7d') {
+    params.set('dateFrom', new Date(Date.now() - 7 * 24 * 3600_000).toISOString().slice(0, 10));
+  } else if (auditDateFilter === '30d') {
+    params.set('dateFrom', new Date(Date.now() - 30 * 24 * 3600_000).toISOString().slice(0, 10));
+  }
+
+  try {
+    const data = await request(`/api/history/audit-log?${params}`);
+    const badge = $('#audit-count-badge');
+    if (badge) badge.textContent = data.total || 0;
+
+    if (!data.events || !data.events.length) {
+      tbody.innerHTML = '<tr><td colspan="7" class="control-empty">Nessun evento registrato corrispondente ai filtri.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = data.events.map((ev) => {
+      const typeClass = ev.type || 'info';
+      return `
+        <tr>
+          <td>${displayDateTime(ev.at)}</td>
+          <td><span class="audit-type-badge ${escapeHtml(typeClass)}">${escapeHtml(ev.type || 'info')}</span></td>
+          <td><button type="button" class="open-audit-tracking-btn text-button" data-tracking="${escapeHtml(ev.trackingNumber)}" style="background:none;border:none;padding:0;color:var(--dsv-blue);cursor:pointer;font-family:monospace;font-weight:700;">${escapeHtml(ev.trackingNumber)}</button></td>
+          <td>${escapeHtml(ev.orderReference || '—')}</td>
+          <td>${dsvBadge(ev.dsvStatus)}</td>
+          <td><strong>${escapeHtml(ev.label || '—')}</strong></td>
+          <td>${escapeHtml(ev.detail || '—')}</td>
+        </tr>
+      `;
+    }).join('');
+
+    tbody.querySelectorAll('.open-audit-tracking-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const trk = btn.dataset.tracking;
+        if (trk) void openShipmentDetail(trk);
+      });
+    });
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="7" class="control-empty">Errore caricamento audit log: ${escapeHtml(err.message)}</td></tr>`;
+  }
 }
 
 async function openShipmentDetail(trackingNumber) {
@@ -2117,6 +2795,7 @@ $('#tab-import-excel')?.addEventListener('click', () => {
   $('#tab-import-manual').setAttribute('aria-selected', 'false');
   $('#excel-import-panel').hidden = false;
   $('#manual-import-panel').hidden = true;
+  currentImportOrigin = 'excel';
 });
 
 $('#tab-import-manual')?.addEventListener('click', () => {
@@ -2126,6 +2805,8 @@ $('#tab-import-manual')?.addEventListener('click', () => {
   $('#tab-import-excel').setAttribute('aria-selected', 'false');
   $('#excel-import-panel').hidden = true;
   $('#manual-import-panel').hidden = false;
+  currentImportOrigin = 'manual';
+  currentImportFileName = 'Inserimento manuale';
   $('#manual-tracking')?.focus();
 });
 
@@ -2219,7 +2900,10 @@ $('#manual-clear-btn')?.addEventListener('click', () => {
 $('#upload-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   try {
-    const form = new FormData(); form.append('file', $('#file').files[0]);
+    const fileObj = $('#file').files[0];
+    currentImportFileName = fileObj?.name || 'File Excel';
+    currentImportOrigin = 'excel';
+    const form = new FormData(); form.append('file', fileObj);
     const { summary, rows } = await request('/api/import/preview', { method: 'POST', body: form });
     previewRows = rows; verificationId = ''; importApplied = false; $('#summary').hidden = false; $('#verify-progress').hidden = true; $('#apply-feedback').hidden = true; if ($('#apply-progress')) $('#apply-progress').hidden = true;
     $('#summary').textContent = `${summary.total} righe lette · ${summary.ready} nuove candidate · ${summary.skipped ? `${summary.skipped} già importate (saltate) · ` : ''}${summary.invalid} da controllare`;
@@ -2232,7 +2916,11 @@ $('#verify-import').addEventListener('click', async () => {
   try {
     $('#verify-import').disabled = true; updateProgress({ completed: 0, total: previewRows.filter((row) => row.validation === 'Pronta per la verifica' && !row.alreadyImported).length });
     tell('#import-message', 'Verifica in corso con richieste limitate, una alla volta…');
-    const { jobId } = await request('/api/import/verification-jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rows: previewRows }) });
+    const { jobId } = await request('/api/import/verification-jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rows: previewRows, filename: currentImportFileName, origin: currentImportOrigin }),
+    });
     const { summary, rows, requestPlan, verificationId: resultId } = await waitForVerification(jobId);
     verificationId = resultId; importApplied = false; $('#apply-feedback').hidden = true; if ($('#apply-progress')) $('#apply-progress').hidden = true; previewRows = rows.map((row) => ({ ...row, selected: row.verification === 'Pronta per aggiornamento' })); renderRows(previewRows, 'verification');
     const ready = previewRows.filter((row) => row.verification === 'Pronta per aggiornamento').length; const skipped = previewRows.filter((row) => row.verification === 'Tracking già presente' || row.alreadyImported || row.verification?.includes('saltata')).length;

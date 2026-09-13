@@ -4,10 +4,11 @@ import express from 'express';
 import multer from 'multer';
 import { readDsvWorkbook } from './excel-import.js';
 import { PrestaShopClient } from './prestashop-client.js';
-import { exportSettingsData, loadSettings, normalizeCronSettings, normalizeDsvStateMappings, restoreSettingsData, saveSettings } from './settings-store.js';
+import { exportSettingsData, loadSettings, normalizeCronSettings, normalizeDsvStateMappings, normalizeNotificationSettings, restoreSettingsData, saveSettings } from './settings-store.js';
 import { DEFAULT_DSV_TRACKING_URL, DSV_PARSER_VERSION, DsvBetaClient, normalizeBetaSettings } from './dsv-beta-client.js';
 import { DsvCronService } from './dsv-cron.js';
-import { archiveShipment, exportShipmentsData, getControlCenter, getExistingShipmentsIndex, getShipment, restoreShipmentsData, syncAppliedShipments, syncDsvShipments, syncManualPrestaShopState, syncShipmentPrestaShopShipping, syncVerifiedShipments, updateShipmentCase } from './shipment-store.js';
+import { NotificationService } from './notification-service.js';
+import { archiveShipment, exportShipmentsData, getAuditLog, getControlCenter, getExistingShipmentsIndex, getImportBatches, getShipment, registerImportBatch, restoreShipmentsData, syncAppliedShipments, syncDsvShipments, syncManualPrestaShopState, syncShipmentPrestaShopShipping, syncVerifiedShipments, updateShipmentCase } from './shipment-store.js';
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
@@ -34,6 +35,11 @@ let connection = await loadSettings({
   apiKey: process.env.PRESTASHOP_WEBSERVICE_KEY ?? '',
   dsvBeta: { enabled: false, camofoxUrl: process.env.CAMOFOX_URL ?? 'http://127.0.0.1:9377', trackingUrl: process.env.DSV_TRACKING_URL ?? DEFAULT_DSV_TRACKING_URL },
   cron: { enabled: false, intervalMinutes: 60, nightPause: true, startHour: 8, endHour: 20, batchSize: 25, minCheckIntervalHours: 2 },
+  notifications: normalizeNotificationSettings({}),
+});
+
+const notificationService = new NotificationService({
+  getSettings: () => connection,
 });
 
 const cronService = new DsvCronService({
@@ -45,6 +51,16 @@ const cronService = new DsvCronService({
   dsvBetaClientFactory: (cfg) => new DsvBetaClient(cfg),
   loadShipments: exportShipmentsData,
   syncDsvShipments,
+  applyOrderState: async ({ orderId, stateId }) => {
+    await client().applyOrderUpdate({
+      orderId,
+      stateId,
+      updateState: true,
+      updateTracking: false,
+    });
+  },
+  syncManualState: syncManualPrestaShopState,
+  notificationService,
 });
 
 cronService.start();
@@ -259,13 +275,170 @@ app.post('/api/dsv-state-mappings', async (req, res) => {
     const mappings = Object.entries(requested).reduce((output, [dsvStatus, target]) => {
       const state = statesById.get(String(target.stateId));
       if (!state) throw new Error(`Lo stato PrestaShop associato a “${dsvStatus}” non è più disponibile.`);
-      output[dsvStatus] = { stateId: String(state.id), stateName: String(state.name) };
+      output[dsvStatus] = {
+        stateId: String(state.id),
+        stateName: String(state.name),
+        autoSync: Boolean(target.autoSync),
+      };
       return output;
     }, {});
     connection = { ...connection, dsvStateMappings: mappings };
     await saveSettings(connection);
     res.json({ mappings, message: `${Object.keys(mappings).length} associazioni salvate.` });
   } catch (error) { res.status(400).json({ error: error.message }); }
+});
+
+app.get('/api/notifications/config', (_req, res) => {
+  res.json({ notifications: normalizeNotificationSettings(connection.notifications) });
+});
+
+app.post('/api/notifications/config', async (req, res) => {
+  try {
+    const notifications = normalizeNotificationSettings(req.body ?? {});
+    connection = { ...connection, notifications };
+    await saveSettings(connection);
+    res.json({ ok: true, notifications, message: 'Impostazioni di notifica salvate con successo.' });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post('/api/notifications/test-telegram', async (req, res) => {
+  try {
+    const config = req.body || connection.notifications?.telegram || {};
+    const result = await notificationService.testTelegram(config);
+    res.json({ ok: true, message: 'Messaggio di prova inviato con successo su Telegram!', result });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post('/api/notifications/test-email', async (req, res) => {
+  try {
+    const config = req.body || connection.notifications?.email || {};
+    const result = await notificationService.testEmail(config);
+    res.json({ ok: true, message: 'Email di prova inviata con successo!', result });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post('/api/notifications/trigger-digest', async (_req, res) => {
+  try {
+    const db = await exportShipmentsData();
+    const records = Object.values(db?.shipments || {});
+    const now = new Date();
+    const todayKey = now.toISOString().slice(0, 10);
+    const totalActive = records.filter((r) => !r.archived && r.dsvStatus !== 'Consegnata').length;
+    const deliveredToday = records.filter((r) => r.dsvStatus === 'Consegnata' && r.dsvCheckedAt && r.dsvCheckedAt.slice(0, 10) === todayKey).length;
+    const exceptions = records.filter((r) => !r.archived && (r.dsvStatus === 'Eccezione DSV' || r.caseStatus === 'Aperta')).length;
+    const thresholdMs = 48 * 3600_000;
+    const delayed = records.filter((r) => !r.archived && r.dsvStatus !== 'Consegnata' && (now.getTime() - new Date(r.dsvCheckedAt || r.createdAt || 0).getTime()) > thresholdMs).length;
+
+    const result = await notificationService.sendDailyDigest({
+      totalActive,
+      deliveredToday,
+      exceptions,
+      delayed,
+    });
+    res.json({ ok: true, message: 'Digest inviato con successo ai canali attivi.', result });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.get('/api/history/batches', async (req, res) => {
+  try {
+    const batches = await getImportBatches();
+    res.json(batches);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/history/batches/:batchId/export', async (req, res) => {
+  try {
+    const batches = await getImportBatches();
+    const batch = batches.find((b) => b.id === req.params.batchId);
+    if (!batch) return res.status(404).send('Lotto non trovato');
+
+    const { shipments } = await exportShipmentsData();
+    const csvRows = [
+      ['Data/Ora Importazione', 'Numero Spedizione', 'Riferimento Ordine', 'ID Ordine', 'Stato PrestaShop', 'Stato DSV', 'Dettaglio DSV', 'Archiviata'],
+    ];
+
+    for (const trk of batch.trackingNumbers) {
+      const rec = shipments[trk] || { trackingNumber: trk };
+      csvRows.push([
+        batch.at ? new Date(batch.at).toLocaleString('it-IT') : '',
+        rec.trackingNumber || '',
+        rec.orderReference || '',
+        rec.orderId || '',
+        rec.currentState || '—',
+        rec.dsvStatus || 'Non verificato',
+        (rec.dsvDetail || '').replace(/[\r\n]+/g, ' '),
+        rec.archived ? 'Sì' : 'No',
+      ]);
+    }
+
+    const csvContent = '\uFEFF' + csvRows.map((r) => r.map((c) => `"${String(c ?? '').replace(/"/g, '""')}"`).join(';')).join('\r\n');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="lotto-${batch.id}.csv"`);
+    res.send(csvContent);
+  } catch (error) {
+    res.status(500).send(error.message);
+  }
+});
+
+app.get('/api/history/audit-log', async (req, res) => {
+  try {
+    const result = await getAuditLog({
+      type: req.query.type,
+      query: req.query.query,
+      dateFrom: req.query.dateFrom,
+      dateTo: req.query.dateTo,
+      limit: req.query.limit,
+    });
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/history/audit-log/export', async (req, res) => {
+  try {
+    const { events } = await getAuditLog({
+      type: req.query.type,
+      query: req.query.query,
+      dateFrom: req.query.dateFrom,
+      dateTo: req.query.dateTo,
+      limit: 5000,
+    });
+
+    const csvRows = [
+      ['Data/Ora', 'Tipo Evento', 'Tracking', 'Riferimento Ordine', 'Stato PrestaShop', 'Stato DSV', 'Azione/Esito', 'Dettaglio'],
+    ];
+
+    for (const ev of events) {
+      csvRows.push([
+        ev.at ? new Date(ev.at).toLocaleString('it-IT') : '',
+        ev.type || '',
+        ev.trackingNumber || '',
+        ev.orderReference || '',
+        ev.currentState || '—',
+        ev.dsvStatus || '—',
+        ev.label || '',
+        (ev.detail || '').replace(/[\r\n]+/g, ' '),
+      ]);
+    }
+
+    const csvContent = '\uFEFF' + csvRows.map((r) => r.map((c) => `"${String(c ?? '').replace(/"/g, '""')}"`).join(';')).join('\r\n');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="audit-log-${new Date().toISOString().slice(0, 10)}.csv"`);
+    res.send(csvContent);
+  } catch (error) {
+    res.status(500).send(error.message);
+  }
 });
 
 app.get('/api/control-center', async (req, res) => {
@@ -589,10 +762,10 @@ app.post('/api/import/preview', upload.single('file'), async (req, res) => {
 });
 
 app.post('/api/import/verification-jobs', (req, res) => {
-  const { rows } = req.body ?? {};
+  const { rows, filename, origin } = req.body ?? {};
   if (!Array.isArray(rows) || !rows.length) return res.status(400).json({ error: 'Carica prima un file da verificare.' });
   const candidates = rows.filter((row) => row.validation === 'Pronta per la verifica' && !row.alreadyImported);
-  const job = { id: randomUUID(), status: 'running', progress: { completed: 0, total: candidates.length }, result: null, error: null };
+  const job = { id: randomUUID(), filename, origin, status: 'running', progress: { completed: 0, total: candidates.length }, result: null, error: null };
   verificationJobs.set(job.id, job);
   void runVerification(job, rows);
   res.status(202).json({ jobId: job.id, progress: job.progress });
@@ -796,6 +969,18 @@ async function runVerification(job, rows) {
     });
     const summary = verified.reduce((output, row) => { output[row.verification] = (output[row.verification] ?? 0) + 1; return output; }, {});
     await syncVerifiedShipments(verified);
+    try {
+      await registerImportBatch({
+        origin: job.origin || 'excel',
+        filename: job.filename || (job.origin === 'manual' ? 'Inserimento manuale' : 'File Excel'),
+        totalRows: rows.length,
+        newCount: verified.filter((r) => !r.alreadyImported && r.validation === 'Pronta per la verifica').length,
+        skippedCount: verified.filter((r) => r.alreadyImported).length,
+        trackingNumbers: verified.map((r) => r.trackingNumber).filter(Boolean),
+      });
+    } catch (batchErr) {
+      console.error('[BATCH] Errore registrazione lotto:', batchErr.message);
+    }
     const verificationId = randomUUID();
     verifiedImports.set(verificationId, { rows: verified, expiresAt: Date.now() + VERIFIED_IMPORT_TTL_MS });
     job.result = { verificationId, summary, rows: verified, requestPlan: { batches: Math.ceil(candidates.length / VERIFY_BATCH_SIZE), maxRequests: 1 + Math.ceil(candidates.length / VERIFY_BATCH_SIZE) * 2, intervalMs: 800 } };

@@ -13,6 +13,7 @@ async function load() {
   try { database = JSON.parse(await readFile(storePath, 'utf8')); }
   catch { database = { shipments: {} }; }
   database.shipments ||= {};
+  database.batches ||= [];
   let migrated = false;
   for (const record of Object.values(database.shipments)) {
     if (!Array.isArray(record.dsvTimeline)) continue;
@@ -303,10 +304,144 @@ export async function restoreShipmentsData(importedShipments) {
   } catch {
     // Nessun backup precedente da archiviare se il file non esisteva
   }
-  database = { shipments: { ...importedShipments } };
+  database = { shipments: { ...importedShipments }, batches: database?.batches || [] };
   await persist();
   return {
     restoredCount: Object.keys(database.shipments).length,
   };
 }
+
+export async function registerImportBatch({
+  origin = 'excel',
+  filename = '',
+  totalRows = 0,
+  newCount = 0,
+  skippedCount = 0,
+  trackingNumbers = [],
+} = {}) {
+  const db = await load();
+  db.batches ||= [];
+  const id = `batch-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const batch = {
+    id,
+    at: now(),
+    origin: origin === 'manual' ? 'manual' : 'excel',
+    filename: filename || (origin === 'manual' ? 'Inserimento manuale' : 'File Excel'),
+    totalRows: Number(totalRows) || trackingNumbers.length,
+    newCount: Number(newCount) || 0,
+    skippedCount: Number(skippedCount) || 0,
+    trackingNumbers: Array.isArray(trackingNumbers) ? trackingNumbers : [],
+  };
+  db.batches.unshift(batch);
+  if (db.batches.length > 100) db.batches = db.batches.slice(0, 100);
+  await persist();
+  return batch;
+}
+
+export async function getImportBatches() {
+  const db = await load();
+  db.batches ||= [];
+
+  let batches = db.batches;
+  if (!batches.length && Object.keys(db.shipments || {}).length > 0) {
+    const groups = new Map();
+    for (const record of Object.values(db.shipments)) {
+      const dateKey = (record.lastImportedAt || record.lastSeenAt || '2026-09-12').slice(0, 10);
+      if (!groups.has(dateKey)) groups.set(dateKey, []);
+      groups.get(dateKey).push(record.trackingNumber);
+    }
+    batches = Array.from(groups.entries()).map(([dateStr, trackings], idx) => ({
+      id: `legacy-batch-${idx + 1}`,
+      at: `${dateStr}T10:00:00.000Z`,
+      origin: 'excel',
+      filename: `Import storico del ${new Date(dateStr).toLocaleDateString('it-IT')}`,
+      totalRows: trackings.length,
+      newCount: trackings.length,
+      skippedCount: 0,
+      trackingNumbers: trackings,
+      isLegacy: true,
+    })).sort((a, b) => String(b.at).localeCompare(String(a.at)));
+  }
+
+  const shipments = db.shipments || {};
+  return batches.map((batch) => {
+    const trackings = Array.isArray(batch.trackingNumbers) ? batch.trackingNumbers : [];
+    let consegnate = 0;
+    let inTransito = 0;
+    let eccezioni = 0;
+    let altre = 0;
+
+    for (const t of trackings) {
+      const rec = shipments[t];
+      if (!rec) continue;
+      const status = normalizeStoredDsvStatus(rec.dsvStatus);
+      if (status === 'Consegnata') consegnate++;
+      else if (['In transito', 'In consegna', 'Centro di distribuzione'].includes(status)) inTransito++;
+      else if (status === 'Eccezione DSV' || rec.operationalStatus === 'Da gestire') eccezioni++;
+      else altre++;
+    }
+
+    return {
+      ...batch,
+      stats: {
+        totalTracked: trackings.length,
+        consegnate,
+        inTransito,
+        eccezioni,
+        altre,
+      },
+    };
+  });
+}
+
+export async function getAuditLog({ type = '', query = '', dateFrom = '', dateTo = '', limit = 300 } = {}) {
+  const db = await load();
+  const needle = String(query || '').trim().toLowerCase();
+  const allEvents = [];
+
+  for (const record of Object.values(db.shipments || {})) {
+    if (!Array.isArray(record.events)) continue;
+    for (const event of record.events) {
+      allEvents.push({
+        at: event.at,
+        type: event.type || 'info',
+        label: event.label || '',
+        detail: event.detail || '',
+        trackingNumber: record.trackingNumber,
+        orderReference: record.orderReference || '',
+        orderId: record.orderId || '',
+        currentState: record.currentState || '—',
+        dsvStatus: normalizeStoredDsvStatus(record.dsvStatus) || '—',
+        archived: Boolean(record.archived),
+      });
+    }
+  }
+
+  allEvents.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+
+  const filtered = allEvents.filter((ev) => {
+    if (type && ev.type !== type) return false;
+    if (dateFrom && ev.at.slice(0, 10) < dateFrom) return false;
+    if (dateTo && ev.at.slice(0, 10) > dateTo) return false;
+    if (needle) {
+      const match = [
+        ev.trackingNumber,
+        ev.orderReference,
+        ev.orderId,
+        ev.label,
+        ev.detail,
+        ev.currentState,
+        ev.dsvStatus,
+      ].some((v) => String(v || '').toLowerCase().includes(needle));
+      if (!match) return false;
+    }
+    return true;
+  });
+
+  return {
+    total: filtered.length,
+    events: filtered.slice(0, Math.max(10, Number(limit) || 300)),
+  };
+}
+
 
