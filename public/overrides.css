@@ -250,6 +250,8 @@ main[data-active-view="control"] .steps, main[data-active-view="exceptions"] .st
 .shipment-facts dd { margin: 4px 0 0; overflow: hidden; color: var(--ink); font-size: .75rem; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .detail-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin: 0 16px 14px; }
 .detail-actions button, .dsv-external-link { display: inline-flex; align-items: center; justify-content: center; min-height: 36px; padding: 7px 10px; font-size: .71rem; font-weight: 780; text-align: center; }
+.detail-actions #update-detail-prestashop-state { flex-direction: column; gap: 1px; }
+.detail-actions #update-detail-prestashop-state small { color: rgba(255,255,255,.8); font-size: .59rem; font-weight: 650; }
 .detail-actions .archive-action-btn { gap: 6px; }
 .detail-actions .archive-action-btn svg { width: 13px; height: 13px; opacity: .85; }
 .dsv-external-link { border: 1px solid #9db8dc; background: #fff; color: var(--dsv-blue-dark); text-decoration: none; }
@@ -266,8 +268,12 @@ main[data-active-view="control"] .steps, main[data-active-view="exceptions"] .st
 .dsv-timeline li:not(:last-child)::before { content: ''; position: absolute; top: 9px; bottom: -1px; left: 4px; width: 1px; background: #9bd260; }
 .dsv-timeline li > div { display: grid; gap: 2px; min-width: 0; }
 .dsv-timeline .event-marker { border-color: #79bf39; background: #8bd24a; }
+.dsv-timeline li.current-summary { margin-bottom: 6px; padding-bottom: 8px; }
+.dsv-timeline li.current-summary > div { padding: 8px 9px; border: 1px solid #b8dfc5; background: var(--success-soft); }
+.dsv-timeline li.current-summary .event-marker { margin-top: 11px; border-color: #168748; background: #26a65b; box-shadow: 0 0 0 3px #eaf7ef; }
 .dsv-event-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .dsv-event-heading strong { color: var(--ink); font-size: .71rem; }
+.dsv-current-event-tag { display: inline-block; margin-left: 7px; padding: 2px 5px; border: 1px solid #a9d8ba; background: #fff; color: #13753f; font-size: .55rem; font-weight: 800; line-height: 1.1; text-transform: uppercase; letter-spacing: .035em; vertical-align: 1px; }
 .dsv-event-heading time { flex: 0 0 auto; color: var(--muted); font-size: .62rem; }
 .dsv-timeline li > div > span { color: #53657c; font-size: .66rem; }
 .dsv-timeline small { overflow-wrap: anywhere; color: #40536d; font-size: .65rem; line-height: 1.35; }
@@ -2525,6 +2531,8 @@ main[data-active-view="control"] .steps, main[data-active-view="exceptions"] .st
   margin-bottom: 2px;
 }
 
+.cron-summary-list .cron-profile-fallback { color: var(--warning); font-weight: 650; }
+
 .cron-manual-trigger {
   margin-top: auto;
   padding-top: 10px;
@@ -2656,6 +2664,19 @@ main[data-active-view="control"] .steps, main[data-active-view="exceptions"] .st
   gap: 8px;
 }
 .settings-camofox-card .beta-switch input { flex: 0 0 auto; width: 16px; height: 16px; margin: 0; }
+.camofox-speed-picker { min-width: 0; margin: 16px 0 0; padding: 0; border: 0; }
+.camofox-speed-picker legend { margin: 0 0 7px; padding: 0; color: #435977; font-size: .72rem; font-weight: 750; }
+.camofox-speed-options { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); border: 1px solid var(--line-strong); }
+.camofox-speed-option { display: grid; grid-template-columns: auto minmax(0,1fr); align-items: start; gap: 9px; min-width: 0; min-height: 78px; padding: 11px 12px; background: #fff; cursor: pointer; }
+.camofox-speed-option + .camofox-speed-option { border-left: 1px solid var(--line-strong); }
+.camofox-speed-option:hover { background: #f7faff; }
+.camofox-speed-option:has(input:checked) { background: var(--dsv-blue-soft); box-shadow: inset 0 2px var(--dsv-blue); }
+.camofox-speed-option input { width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--dsv-blue); }
+.camofox-speed-option > span { display: grid; gap: 4px; min-width: 0; }
+.camofox-speed-option strong { color: var(--dsv-navy); font-size: .76rem; }
+.camofox-speed-option strong small { display: inline-block; margin-left: 5px; padding: 2px 5px; background: #fff; color: var(--dsv-blue-dark); font-size: .57rem; font-weight: 800; letter-spacing: .025em; text-transform: uppercase; vertical-align: 1px; }
+.camofox-speed-option > span > span { overflow-wrap: anywhere; color: #53657c; font-size: .68rem; line-height: 1.42; }
+.camofox-speed-note { margin: 7px 0 0; overflow-wrap: anywhere; color: var(--muted); font-size: .66rem; line-height: 1.4; }
 .settings-camofox-card .actions { justify-content: flex-end; gap: 8px; margin-top: 14px; }
 .settings-camofox-card .actions button { min-height: 36px; padding: 7px 11px; font-size: .74rem; }
 
@@ -2721,6 +2742,9 @@ main[data-active-view="control"] .steps, main[data-active-view="exceptions"] .st
   .settings-dashboard .cron-night-wrap,
   .settings-dashboard .cron-night-wrap > .field-hint,
   .settings-camofox-card .beta-switch { grid-column: 1; }
+  .settings-camofox-card .beta-heading { align-items: flex-start; flex-direction: column; gap: 8px; }
+  .camofox-speed-options { grid-template-columns: 1fr; }
+  .camofox-speed-option + .camofox-speed-option { border-top: 1px solid var(--line-strong); border-left: 0; }
   .settings-form-actions { align-items: stretch; flex-direction: column-reverse; }
   .settings-form-actions button,
   .settings-catalog-card #load-catalog,
@@ -3314,4 +3338,3 @@ main[data-active-view="control"] .steps, main[data-active-view="exceptions"] .st
 .control-batch-filter-reset:hover {
   background: #dbeafe;
 }
-

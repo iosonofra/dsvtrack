@@ -184,6 +184,7 @@ export class DsvCronService {
     this.isRunning = true;
     this.cancelRequested = false;
     const startTime = Date.now();
+    let betaClient = null;
 
     try {
       const db = await this.loadShipments();
@@ -211,9 +212,10 @@ export class DsvCronService {
         completed: 0,
         total: candidates.length,
         currentTracking: candidates[0].trackingNumber,
+        speedProfile: dsvBetaConfig.speedProfile === 'fast' ? 'fast' : 'safe',
       };
 
-      const betaClient = this.dsvBetaClientFactory(dsvBetaConfig);
+      betaClient = this.dsvBetaClientFactory(dsvBetaConfig);
       const results = [];
       let deliveredCount = 0;
       let errorCount = 0;
@@ -237,7 +239,7 @@ export class DsvCronService {
 
           // Se compare captcha o blocco di accesso, effettua reset sessione e pausa prolungata
           if (outcome.reasonCode === 'ACCESS_GUARD' || outcome.status === 'Intervento manuale richiesto') {
-            betaClient.resetSession();
+            await betaClient.resetSession('Modalità affidabile attivata dopo una richiesta di verifica da parte di DSV.');
             await new Promise((r) => setTimeout(r, 8000));
           }
         } catch (error) {
@@ -247,7 +249,7 @@ export class DsvCronService {
             status: 'Errore beta',
             detail: error.message,
           });
-          betaClient.resetSession();
+          await betaClient.resetSession('Modalità affidabile attivata dopo un errore di navigazione Camoufox.');
         }
 
         // Sincronizza subito la spedizione nel database locale in modo progressivo
@@ -299,7 +301,10 @@ export class DsvCronService {
 
         // Pacing anti-blocco tra le richieste se ce ne sono altre
         if (i < candidates.length - 1 && !this.cancelRequested) {
-          await new Promise((resolve) => setTimeout(resolve, this.jitterFn()));
+          const delayMs = typeof betaClient.getPacingDelay === 'function'
+            ? betaClient.getPacingDelay('cron')
+            : this.jitterFn();
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
         }
       }
 
@@ -323,10 +328,14 @@ export class DsvCronService {
         deliveredFound: deliveredCount,
         errors: errorCount,
         durationSeconds,
+        speedProfile: betaClient.getRuntimeProfile?.().requested || dsvBetaConfig.speedProfile || 'safe',
+        effectiveSpeedProfile: betaClient.getRuntimeProfile?.().effective || dsvBetaConfig.speedProfile || 'safe',
+        fallbackReason: betaClient.getRuntimeProfile?.().fallbackReason || '',
       };
 
       return this.lastRunSummary;
     } finally {
+      await betaClient?.close?.();
       this.isRunning = false;
       this.cancelRequested = false;
       this.activeProgress = null;

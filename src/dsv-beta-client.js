@@ -4,8 +4,18 @@ const DSV_HOSTS = new Set(['www.dsv.com', 'dsv.com']);
 const REQUEST_TIMEOUT_MS = 20_000;
 const TRACKING_POLL_TIMEOUT_MS = 18_000;
 const TRACKING_POLL_INTERVAL_MS = 700;
+const FAST_TRACKING_POLL_INTERVALS_MS = [250, 500, 800, 1200];
 export const DSV_PARSER_VERSION = 4;
 export const DEFAULT_DSV_TRACKING_URL = 'https://www.dsv.com/mydsv/tracking-public/?refNumber=TRACKINGDAINSERIRE&language_region=it-IT_IT';
+
+export const DSV_SPEED_PROFILES = Object.freeze({
+  safe: Object.freeze({ id: 'safe', reuseTab: false, initialDelayMs: 500, manualDelayMs: [2000, 3200], cronDelayMs: [4000, 6000] }),
+  fast: Object.freeze({ id: 'fast', reuseTab: true, initialDelayMs: 150, manualDelayMs: [1200, 2000], cronDelayMs: [1800, 3000] }),
+});
+
+export function normalizeDsvSpeedProfile(value) {
+  return value === 'fast' ? 'fast' : 'safe';
+}
 
 function assertLoopback(value) {
   const url = new URL(value);
@@ -21,7 +31,7 @@ export function normalizeBetaSettings(input = {}) {
   if (trackingUrl.protocol !== 'https:' || !DSV_HOSTS.has(trackingUrl.hostname)) {
     throw new Error('Per la beta è consentita solo una pagina HTTPS ufficiale dsv.com.');
   }
-  return { enabled: Boolean(input.enabled), camofoxUrl, trackingUrl: trackingUrl.toString() };
+  return { enabled: Boolean(input.enabled), camofoxUrl, trackingUrl: trackingUrl.toString(), speedProfile: normalizeDsvSpeedProfile(input.speedProfile) };
 }
 
 function cleanSnapshot(value) {
@@ -166,10 +176,83 @@ export class DsvBetaClient {
     this.settings = normalizeBetaSettings(settings);
     this.userId = 'prestashop-dsv-beta';
     this.activeSessionKey = 'dsv-shared-session';
+    this.requestedSpeedProfile = this.settings.speedProfile;
+    this.effectiveSpeedProfile = this.requestedSpeedProfile;
+    this.activeTabId = '';
+    this.unstableResultCount = 0;
+    this.fallbackReason = '';
+    this.cookieConsentChecked = false;
   }
 
-  resetSession() {
+  async resetSession(reason = 'La sessione Camoufox è stata reimpostata dopo un errore.') {
+    const staleTabId = this.activeTabId;
+    this.activeTabId = '';
+    this.cookieConsentChecked = false;
     this.activeSessionKey = `dsv-session-${randomUUID()}`;
+    if (this.requestedSpeedProfile === 'fast') {
+      this.effectiveSpeedProfile = 'safe';
+      this.fallbackReason = reason;
+    }
+    await this.closeTab(staleTabId);
+  }
+
+  getRuntimeProfile() {
+    return {
+      requested: this.requestedSpeedProfile,
+      effective: this.effectiveSpeedProfile,
+      fallback: this.requestedSpeedProfile !== this.effectiveSpeedProfile,
+      fallbackReason: this.fallbackReason,
+    };
+  }
+
+  getPacingDelay(scope = 'manual', random = Math.random) {
+    const profile = DSV_SPEED_PROFILES[this.effectiveSpeedProfile];
+    const [min, max] = scope === 'cron' ? profile.cronDelayMs : profile.manualDelayMs;
+    return min + Math.floor(random() * (max - min + 1));
+  }
+
+  async closeTab(tabId) {
+    if (!tabId) return;
+    await this.request(`/tabs/${encodeURIComponent(tabId)}?userId=${encodeURIComponent(this.userId)}`, { method: 'DELETE' }).catch(() => {});
+    if (this.activeTabId === tabId) this.activeTabId = '';
+  }
+
+  async close() {
+    const tabId = this.activeTabId;
+    this.activeTabId = '';
+    await this.closeTab(tabId);
+  }
+
+  noteTrackingResult(result) {
+    const accessGuard = result?.reasonCode === 'ACCESS_GUARD' || result?.status === 'Intervento manuale richiesto';
+    const unstable = result?.status === 'Da verificare manualmente' || result?.reasonCode === 'STATUS_TIMEOUT';
+    this.unstableResultCount = unstable ? this.unstableResultCount + 1 : 0;
+    if (this.effectiveSpeedProfile === 'fast' && (accessGuard || this.unstableResultCount >= 2)) {
+      this.effectiveSpeedProfile = 'safe';
+      this.fallbackReason = accessGuard
+        ? 'Modalità affidabile attivata dopo un blocco o una verifica richiesta da DSV.'
+        : 'Modalità affidabile attivata dopo due risultati consecutivi non stabili.';
+    }
+  }
+
+  async acquireTab(url) {
+    const reuseTab = DSV_SPEED_PROFILES[this.effectiveSpeedProfile].reuseTab;
+    if (reuseTab && this.activeTabId) {
+      try {
+        await this.request(`/tabs/${encodeURIComponent(this.activeTabId)}/navigate`, {
+          method: 'POST',
+          body: JSON.stringify({ userId: this.userId, sessionKey: this.activeSessionKey, url }),
+        });
+        return this.activeTabId;
+      } catch {
+        await this.closeTab(this.activeTabId);
+      }
+    }
+    const tab = await this.request('/tabs', { method: 'POST', body: JSON.stringify({ userId: this.userId, sessionKey: this.activeSessionKey, url }) });
+    const tabId = tab.tabId || tab.id;
+    if (!tabId) throw new Error('Camofox non ha restituito una scheda di navigazione.');
+    if (reuseTab) this.activeTabId = tabId;
+    return tabId;
   }
 
   async request(path, options = {}) {
@@ -228,14 +311,21 @@ export class DsvBetaClient {
 
   async waitForTrackingResult(tabId, snapshot) {
     const deadline = Date.now() + TRACKING_POLL_TIMEOUT_MS;
+    const fastMode = this.effectiveSpeedProfile === 'fast';
     let best = null;
     let stableStatus = '';
     let stableReads = 0;
+    let pollIndex = 0;
     let lastEvidence = { headings: [], activeTexts: [], timeline: [], frameCount: 0 };
     do {
-      const [page, domEvidence] = await Promise.all([snapshot(), this.extractDomEvidence(tabId).catch(() => lastEvidence)]);
+      const domEvidence = await this.extractDomEvidence(tabId).catch(() => lastEvidence);
       lastEvidence = domEvidence;
-      const candidates = [parseDsvStatusSnapshot(page), parseDsvDomEvidence(domEvidence)].filter(Boolean).sort((a, b) => b.confidence - a.confidence);
+      const domResult = parseDsvDomEvidence(domEvidence);
+      if (fastMode && domResult?.status !== 'Da verificare manualmente' && domResult?.confidence >= .9) {
+        return { result: domResult, timeline: domEvidence.timeline };
+      }
+      const page = await snapshot();
+      const candidates = [parseDsvStatusSnapshot(page), domResult].filter(Boolean).sort((a, b) => b.confidence - a.confidence);
       const current = candidates[0];
       if (!best || current.confidence > best.confidence) best = current;
       if (current.status !== 'Da verificare manualmente') {
@@ -243,20 +333,23 @@ export class DsvBetaClient {
         else { stableStatus = current.status; stableReads = 1; }
         if (current.confidence >= .9 || stableReads >= 2) return { result: current, timeline: domEvidence.timeline };
       }
-      if (Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, TRACKING_POLL_INTERVAL_MS));
+      if (Date.now() < deadline) {
+        const delayMs = fastMode
+          ? FAST_TRACKING_POLL_INTERVALS_MS[Math.min(pollIndex, FAST_TRACKING_POLL_INTERVALS_MS.length - 1)]
+          : TRACKING_POLL_INTERVAL_MS;
+        pollIndex += 1;
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
     } while (Date.now() < deadline);
     const fallback = best?.status !== 'Da verificare manualmente' ? best : statusResult('Da verificare manualmente', 'Il tracking DSV non ha esposto uno stato stabile entro il tempo previsto. Puoi riprovare.', { evidence: best?.evidence || 'none', confidence: best?.confidence || 0, reasonCode: 'STATUS_TIMEOUT', rawStatus: best?.rawStatus || '' });
     return { result: fallback, timeline: lastEvidence.timeline };
   }
 
   async track(trackingNumber) {
-    const sessionKey = this.activeSessionKey;
     const trackingUrl = this.settings.trackingUrl.includes('TRACKINGDAINSERIRE')
       ? this.settings.trackingUrl.replaceAll('TRACKINGDAINSERIRE', encodeURIComponent(trackingNumber))
       : this.settings.trackingUrl;
-    const tab = await this.request('/tabs', { method: 'POST', body: JSON.stringify({ userId: this.userId, sessionKey, url: trackingUrl }) });
-    const tabId = tab.tabId || tab.id;
-    if (!tabId) throw new Error('Camofox non ha restituito una scheda di navigazione.');
+    const tabId = await this.acquireTab(trackingUrl);
     const snapshot = async () => {
       const value = await this.request(`/tabs/${encodeURIComponent(tabId)}/snapshot?userId=${encodeURIComponent(this.userId)}`);
       return value.snapshot || value.data?.snapshot || value.raw || '';
@@ -265,17 +358,24 @@ export class DsvBetaClient {
     const enrich = (statusResult, source, timeline = []) => {
       const normalizedTimeline = normalizeDsvTimeline(timeline);
       const statusEvent = findDsvStatusEvent(statusResult.status, normalizedTimeline);
-      return { ...statusResult, statusDateRaw: statusEvent?.statusDateRaw || statusResult.statusDateRaw || '', statusAt: statusEvent?.statusAt || statusResult.statusAt || '', statusDatePrecision: statusEvent?.statusDatePrecision || statusResult.statusDatePrecision || '', source, trackingUrl: officialTrackingUrl, timeline: normalizedTimeline };
+      const output = { ...statusResult, statusDateRaw: statusEvent?.statusDateRaw || statusResult.statusDateRaw || '', statusAt: statusEvent?.statusAt || statusResult.statusAt || '', statusDatePrecision: statusEvent?.statusDatePrecision || statusResult.statusDatePrecision || '', source, trackingUrl: officialTrackingUrl, timeline: normalizedTimeline };
+      this.noteTrackingResult(output);
+      return output;
     };
     try {
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      let page = await snapshot();
+      await new Promise((resolve) => setTimeout(resolve, DSV_SPEED_PROFILES[this.effectiveSpeedProfile].initialDelayMs));
       const directUrl = this.settings.trackingUrl.includes('TRACKINGDAINSERIRE');
-      const necessaryOnlyRef = findRef(page, /use necessary cookies only|rifiuta tutto|solo cookie necessari|reject all/i);
-      if (necessaryOnlyRef) {
-        await this.request(`/tabs/${encodeURIComponent(tabId)}/click`, { method: 'POST', body: JSON.stringify({ userId: this.userId, ref: necessaryOnlyRef }) });
-        await new Promise((resolve) => setTimeout(resolve, 350));
+      const shouldInspectEntryPage = this.effectiveSpeedProfile !== 'fast' || !directUrl || !this.cookieConsentChecked;
+      let page = '';
+      if (shouldInspectEntryPage) {
         page = await snapshot();
+        const necessaryOnlyRef = findRef(page, /use necessary cookies only|rifiuta tutto|solo cookie necessari|reject all/i);
+        if (necessaryOnlyRef) {
+          await this.request(`/tabs/${encodeURIComponent(tabId)}/click`, { method: 'POST', body: JSON.stringify({ userId: this.userId, ref: necessaryOnlyRef }) });
+          await new Promise((resolve) => setTimeout(resolve, 350));
+          page = await snapshot();
+        }
+        this.cookieConsentChecked = true;
       }
 
       if (directUrl) {
@@ -302,7 +402,7 @@ export class DsvBetaClient {
       const observed = await this.waitForTrackingResult(tabId, snapshot);
       return enrich(observed.result, 'Pagina pubblica DSV tramite Camofox.', observed.timeline);
     } finally {
-      await this.request(`/tabs/${encodeURIComponent(tabId)}?userId=${encodeURIComponent(this.userId)}`, { method: 'DELETE' }).catch(() => {});
+      if (!DSV_SPEED_PROFILES[this.effectiveSpeedProfile].reuseTab || this.activeTabId !== tabId) await this.closeTab(tabId);
     }
   }
 }

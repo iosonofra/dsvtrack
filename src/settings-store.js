@@ -5,6 +5,10 @@ import { fileURLToPath } from 'node:url';
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const settingsPath = join(projectRoot, 'data', 'settings.json');
 
+export function normalizeDsvSpeedProfile(value) {
+  return value === 'fast' ? 'fast' : 'safe';
+}
+
 export function normalizeDsvStateMappings(value = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   return Object.entries(value).slice(0, 100).reduce((mappings, [dsvStatus, target]) => {
@@ -73,6 +77,7 @@ export async function loadSettings(defaults) {
         enabled: Boolean(parsed.dsvBeta?.enabled),
         camofoxUrl: parsed.dsvBeta?.camofoxUrl || defaults.dsvBeta?.camofoxUrl || 'http://127.0.0.1:9377',
         trackingUrl,
+        speedProfile: normalizeDsvSpeedProfile(parsed.dsvBeta?.speedProfile || defaults.dsvBeta?.speedProfile),
       },
       dsvStateMappings: normalizeDsvStateMappings(parsed.dsvStateMappings),
       defaultCarrierId: String(parsed.defaultCarrierId || defaults.defaultCarrierId || '').trim(),
@@ -110,6 +115,7 @@ export function exportSettingsData(settings) {
       enabled: Boolean(settings.dsvBeta?.enabled),
       camofoxUrl: settings.dsvBeta?.camofoxUrl || 'http://127.0.0.1:9377',
       trackingUrl: settings.dsvBeta?.trackingUrl || 'https://www.dsv.com/mydsv/tracking-public/?refNumber=TRACKINGDAINSERIRE&language_region=it-IT_IT',
+      speedProfile: normalizeDsvSpeedProfile(settings.dsvBeta?.speedProfile),
     },
     dsvStateMappings: normalizeDsvStateMappings(settings.dsvStateMappings),
     defaultCarrierId: String(settings.defaultCarrierId || '').trim(),
@@ -136,6 +142,7 @@ export async function restoreSettingsData(importedSettings, defaults = {}) {
       enabled: Boolean(importedSettings.dsvBeta?.enabled),
       camofoxUrl: importedSettings.dsvBeta?.camofoxUrl || defaults.dsvBeta?.camofoxUrl || 'http://127.0.0.1:9377',
       trackingUrl: importedSettings.dsvBeta?.trackingUrl || defaults.dsvBeta?.trackingUrl || 'https://www.dsv.com/mydsv/tracking-public/?refNumber=TRACKINGDAINSERIRE&language_region=it-IT_IT',
+      speedProfile: normalizeDsvSpeedProfile(importedSettings.dsvBeta?.speedProfile || defaults.dsvBeta?.speedProfile),
     },
     dsvStateMappings: normalizeDsvStateMappings(importedSettings.dsvStateMappings),
     defaultCarrierId: String(importedSettings.defaultCarrierId || defaults.defaultCarrierId || '').trim(),
@@ -146,5 +153,4 @@ export async function restoreSettingsData(importedSettings, defaults = {}) {
   await saveSettings(merged);
   return merged;
 }
-
 

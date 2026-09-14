@@ -5,7 +5,7 @@ import multer from 'multer';
 import { readDsvWorkbook } from './excel-import.js';
 import { PrestaShopClient } from './prestashop-client.js';
 import { exportSettingsData, loadSettings, normalizeCronSettings, normalizeDsvStateMappings, normalizeNotificationSettings, restoreSettingsData, saveSettings } from './settings-store.js';
-import { DEFAULT_DSV_TRACKING_URL, DSV_PARSER_VERSION, DsvBetaClient, normalizeBetaSettings } from './dsv-beta-client.js';
+import { DEFAULT_DSV_TRACKING_URL, DSV_PARSER_VERSION, DSV_SPEED_PROFILES, DsvBetaClient, normalizeBetaSettings } from './dsv-beta-client.js';
 import { DsvCronService } from './dsv-cron.js';
 import { NotificationService } from './notification-service.js';
 import { archiveShipment, exportShipmentsData, getAuditLog, getControlCenter, getExistingShipmentsIndex, getImportBatches, getShipment, registerImportBatch, restoreShipmentsData, syncAppliedShipments, syncDsvShipments, syncManualPrestaShopState, syncShipmentPrestaShopShipping, syncVerifiedShipments, updateShipmentCase } from './shipment-store.js';
@@ -20,21 +20,17 @@ const verificationJobs = new Map();
 const applyJobs = new Map();
 const dsvBetaJobs = new Map();
 const DSV_BETA_MAX_ROWS = 10;
-const DSV_BETA_INTERVAL_MS = 2_500;
 const DSV_BETA_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const DSV_MOVING_CACHE_TTL_MS = 2 * 60 * 60 * 1000;
 const DSV_NOT_FOUND_CACHE_TTL_MS = 60 * 60 * 1000;
 const dsvBetaCache = new Map();
 const prestashopOrderStateLocks = new Map();
 
-function naturalJitterInterval() {
-  return 2000 + Math.floor(Math.random() * 1200);
-}
 let dsvBetaQueue = Promise.resolve();
 let connection = await loadSettings({
   baseUrl: process.env.PRESTASHOP_URL ?? '',
   apiKey: process.env.PRESTASHOP_WEBSERVICE_KEY ?? '',
-  dsvBeta: { enabled: false, camofoxUrl: process.env.CAMOFOX_URL ?? 'http://127.0.0.1:9377', trackingUrl: process.env.DSV_TRACKING_URL ?? DEFAULT_DSV_TRACKING_URL },
+  dsvBeta: { enabled: false, camofoxUrl: process.env.CAMOFOX_URL ?? 'http://127.0.0.1:9377', trackingUrl: process.env.DSV_TRACKING_URL ?? DEFAULT_DSV_TRACKING_URL, speedProfile: 'safe' },
   cron: { enabled: false, intervalMinutes: 60, nightPause: true, startHour: 8, endHour: 20, batchSize: 25, minCheckIntervalHours: 2 },
   notifications: normalizeNotificationSettings({}),
 });
@@ -196,15 +192,21 @@ app.post('/api/backup/restore', upload.single('file'), async (req, res) => {
   }
 });
 
+function dsvBetaConfigResponse() {
+  const profile = DSV_SPEED_PROFILES[connection.dsvBeta?.speedProfile] || DSV_SPEED_PROFILES.safe;
+  const intervalMs = Math.round((profile.manualDelayMs[0] + profile.manualDelayMs[1]) / 2);
+  return { ...connection.dsvBeta, maxRows: DSV_BETA_MAX_ROWS, intervalMs, cacheHours: DSV_BETA_CACHE_TTL_MS / 3_600_000, movingCacheHours: DSV_MOVING_CACHE_TTL_MS / 3_600_000, parserVersion: DSV_PARSER_VERSION };
+}
+
 app.get('/api/dsv-beta/config', (_req, res) => {
-  res.json({ ...connection.dsvBeta, maxRows: DSV_BETA_MAX_ROWS, intervalMs: DSV_BETA_INTERVAL_MS, cacheHours: DSV_BETA_CACHE_TTL_MS / 3_600_000, movingCacheHours: DSV_MOVING_CACHE_TTL_MS / 3_600_000, parserVersion: DSV_PARSER_VERSION });
+  res.json(dsvBetaConfigResponse());
 });
 
 app.post('/api/dsv-beta/config', async (req, res) => {
   try {
     connection = { ...connection, dsvBeta: normalizeBetaSettings(req.body ?? {}) };
     await saveSettings(connection);
-    res.json({ ...connection.dsvBeta, maxRows: DSV_BETA_MAX_ROWS, intervalMs: DSV_BETA_INTERVAL_MS, cacheHours: DSV_BETA_CACHE_TTL_MS / 3_600_000, movingCacheHours: DSV_MOVING_CACHE_TTL_MS / 3_600_000, parserVersion: DSV_PARSER_VERSION });
+    res.json(dsvBetaConfigResponse());
   } catch (error) { res.status(400).json({ error: error.message }); }
 });
 
@@ -898,8 +900,8 @@ async function runApplyJob(job, prepared) {
 }
 
 async function runDsvBetaJob(job, trackingNumbers) {
+  const beta = new DsvBetaClient(connection.dsvBeta);
   try {
-    const beta = new DsvBetaClient(connection.dsvBeta);
     const results = [];
     for (const [index, trackingNumber] of trackingNumbers.entries()) {
       const cached = dsvBetaCache.get(trackingNumber);
@@ -932,12 +934,12 @@ async function runDsvBetaJob(job, trackingNumbers) {
             else dsvBetaCache.delete(trackingNumber);
             results.push({ trackingNumber, ...value, cached: false });
             if (value.reasonCode === 'ACCESS_GUARD' || value.status === 'Intervento manuale richiesto') {
-              beta.resetSession();
+              await beta.resetSession('Modalità affidabile attivata dopo una richiesta di verifica da parte di DSV.');
               if (index < trackingNumbers.length - 1) await pause(6000 + Math.floor(Math.random() * 2000));
             }
           } catch (error) {
             results.push({ trackingNumber, status: 'Errore beta', detail: error.message, source: 'Nessuna modifica è stata eseguita.' });
-            beta.resetSession();
+            await beta.resetSession('Modalità affidabile attivata dopo un errore di navigazione Camoufox.');
             if (index < trackingNumbers.length - 1) await pause(5000);
           }
         }
@@ -945,13 +947,15 @@ async function runDsvBetaJob(job, trackingNumbers) {
       job.progress.completed = index + 1;
       const lastResult = results[results.length - 1];
       if (index < trackingNumbers.length - 1 && !lastResult?.cached) {
-        await pause(naturalJitterInterval());
+        await pause(beta.getPacingDelay('manual'));
       }
     }
-    job.result = { results, safeguards: { maxRows: DSV_BETA_MAX_ROWS, intervalMs: DSV_BETA_INTERVAL_MS, cacheHours: DSV_BETA_CACHE_TTL_MS / 3_600_000, movingCacheHours: DSV_MOVING_CACHE_TTL_MS / 3_600_000, parserVersion: DSV_PARSER_VERSION } };
+    const runtimeProfile = beta.getRuntimeProfile();
+    job.result = { results, safeguards: { maxRows: DSV_BETA_MAX_ROWS, intervalMs: dsvBetaConfigResponse().intervalMs, cacheHours: DSV_BETA_CACHE_TTL_MS / 3_600_000, movingCacheHours: DSV_MOVING_CACHE_TTL_MS / 3_600_000, parserVersion: DSV_PARSER_VERSION, speedProfile: runtimeProfile.requested, effectiveSpeedProfile: runtimeProfile.effective, fallbackReason: runtimeProfile.fallbackReason } };
     await syncDsvShipments(results);
     job.status = 'complete';
   } catch (error) { job.error = error.message; job.status = 'failed'; }
+  finally { await beta.close(); }
 }
 
 async function runVerification(job, rows) {

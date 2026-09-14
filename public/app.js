@@ -244,6 +244,9 @@ async function loadDsvBeta() {
   $('#dsv-beta-enabled').checked = dsvBetaSettings.enabled;
   $('#dsv-camofox-url').value = dsvBetaSettings.camofoxUrl;
   $('#dsv-tracking-url').value = dsvBetaSettings.trackingUrl;
+  const speedProfile = dsvBetaSettings.speedProfile === 'fast' ? 'fast' : 'safe';
+  const speedInput = document.querySelector(`input[name="dsv-speed-profile"][value="${speedProfile}"]`);
+  if (speedInput) speedInput.checked = true;
   updateControlServiceStatus();
   updateControlSelectionUi([...document.querySelectorAll('.control-row-select')].map((input) => ({ trackingNumber: input.dataset.tracking })));
 }
@@ -253,7 +256,8 @@ function updateControlServiceStatus() {
   if (!status) return;
   const enabled = Boolean(dsvBetaSettings?.enabled);
   status.dataset.state = enabled ? 'ready' : 'off';
-  status.textContent = enabled ? 'DSV tracking attivo' : 'DSV tracking non attivo';
+  const speedLabel = dsvBetaSettings?.speedProfile === 'fast' ? 'modalità rapida' : 'modalità affidabile';
+  status.textContent = enabled ? `DSV tracking attivo · ${speedLabel}` : 'DSV tracking non attivo';
 }
 
 function controlBadge(status) {
@@ -308,6 +312,46 @@ function prestaShopStateAction(row) {
   const mapped = mappedPrestaShopState(row);
   const label = mapped ? 'Aggiorna' : 'Scegli stato';
   return `<button class="update-prestashop-state" data-tracking="${escapeHtml(row.trackingNumber)}" type="button" aria-label="${label} PrestaShop per ${escapeHtml(row.trackingNumber)}">${label}</button>`;
+}
+
+function normalizedDsvJourneyStage(value) {
+  const status = normalizedStateLabel(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  if (/non consegnat|undeliver/.test(status)) return 'tentativo di consegna';
+  if (/terminal.*mittente|mittente.*terminal/.test(status)) return 'presa in carico';
+  if (/consegnat|delivered/.test(status)) return 'consegnata';
+  if (/fuori per la consegna|in consegna|out for delivery/.test(status)) return 'in consegna';
+  if (/centro di distribuzione|terminal|distribution cent/.test(status)) return 'centro di distribuzione';
+  if (/in transito|partito|arrivato|transit|departed|arrived/.test(status)) return 'in transito';
+  if (/prenotat|booked/.test(status)) return 'prenotata';
+  return '';
+}
+
+function shipmentDetailTimeline(shipment) {
+  const timeline = Array.isArray(shipment.dsvTimeline) ? shipment.dsvTimeline.map((event) => ({ ...event })) : [];
+  const currentStage = normalizedDsvJourneyStage(shipment.dsvStatus);
+  if (!currentStage || timeline.some((event) => normalizedDsvJourneyStage(event.event) === currentStage)) return timeline;
+
+  timeline.push({
+    event: shipment.dsvStatus,
+    date: shipment.dsvStatusAt ? displayDsvEventDate(shipment) : 'Data evento non disponibile',
+    country: '',
+    location: '',
+    reason: shipment.dsvStatusAt
+      ? 'Stato corrente rilevato dal riepilogo DSV.'
+      : `Stato corrente rilevato dal riepilogo DSV il ${displayDateTime(shipment.dsvCheckedAt || shipment.lastSeenAt)}. La data dell’evento non è esposta da DSV.`,
+    currentSummary: true,
+  });
+  return timeline;
+}
+
+function renderShipmentDsvTimeline(timeline, trackingUrl) {
+  if (!timeline.length) {
+    return `<section class="dsv-history dsv-history-empty"><div><strong>Storico DSV non ancora acquisito</strong><span>Ripeti la verifica per importare gli eventi disponibili.</span></div><a href="${escapeHtml(trackingUrl)}" target="_blank" rel="noopener noreferrer">Consulta su DSV</a></section>`;
+  }
+
+  const summaryCount = timeline.filter((event) => event.currentSummary).length;
+  const countLabel = `${timeline.length} ${timeline.length === 1 ? 'evento' : 'eventi'}${summaryCount ? ' · stato corrente incluso' : ''}`;
+  return `<section class="dsv-history"><div class="detail-section-heading"><h4>Storico DSV</h4><span>${countLabel}</span></div><ol class="dsv-timeline">${timeline.slice().reverse().map((event) => `<li${event.currentSummary ? ' class="current-summary"' : ''}><span class="event-marker" aria-hidden="true"></span><div><div class="dsv-event-heading"><strong>${escapeHtml(event.event || 'Evento DSV')}${event.currentSummary ? '<span class="dsv-current-event-tag">Stato corrente</span>' : ''}</strong><time>${escapeHtml(event.date || '—')}</time></div><span>${escapeHtml([event.country, event.location].filter(Boolean).join(' · ') || (event.currentSummary ? 'Riepilogo DSV' : 'Località non disponibile'))}</span>${event.reason ? `<small>${escapeHtml(event.reason)}</small>` : ''}</div></li>`).join('')}</ol></section>`;
 }
 
 const DSV_STATUS_ORDER = ['Prenotata', 'In transito', 'Centro di distribuzione', 'In consegna', 'Consegnata', 'Non verificato', 'Da verificare manualmente', 'Spedizione non trovata', 'Intervento manuale richiesto', 'Eccezione DSV', 'Errore beta'];
@@ -445,7 +489,8 @@ async function waitForControlDsvBeta(jobId, batchContext = { completedBefore: 0,
   updateControlDsvProgress({ completed: batchContext.completedBefore + snapshot.progress.completed, total: batchContext.total || snapshot.progress.total });
   if (snapshot.status === 'queued' || snapshot.status === 'running') {
     const batchLabel = batchContext.batchCount > 1 ? `Blocco ${batchContext.batchIndex + 1} di ${batchContext.batchCount}. ` : '';
-    tell('#control-dsv-message', snapshot.status === 'queued' ? `${batchLabel}In coda: Camoufox sta completando un’altra richiesta.` : `${batchLabel}Verifica DSV in corso, una spedizione alla volta…`);
+    const modeLabel = dsvBetaSettings?.speedProfile === 'fast' ? 'modalità rapida' : 'modalità affidabile';
+    tell('#control-dsv-message', snapshot.status === 'queued' ? `${batchLabel}In coda: Camoufox sta completando un’altra richiesta.` : `${batchLabel}Verifica DSV in corso, una spedizione alla volta · ${modeLabel}.`);
     await new Promise((resolve) => setTimeout(resolve, 750));
     return waitForControlDsvBeta(jobId, batchContext);
   }
@@ -940,7 +985,7 @@ function renderCronStatus(status) {
   if (indicator) {
     if (status.isRunning) {
       indicator.className = 'status-indicator running';
-      indicator.textContent = 'In esecuzione';
+      indicator.textContent = `In esecuzione · ${status.activeProgress?.speedProfile === 'fast' ? 'Rapida' : 'Affidabile'}`;
     } else if (status.isNightPaused) {
       indicator.className = 'status-indicator paused';
       indicator.textContent = 'Pausa notturna';
@@ -1023,10 +1068,14 @@ function renderCronStatus(status) {
         ? `<span style="color:var(--danger)"> · ${s.errors} con errore</span>`
         : '';
       const cancelledText = s.type === 'cancelled' ? ' <span style="color:var(--warning)">(Interrotta dall’operatore)</span>' : '';
+      const profileText = s.effectiveSpeedProfile === 'fast' ? 'Rapido controllato' : 'Affidabile';
+      const fallbackText = s.fallbackReason ? `<li class="cron-profile-fallback">${escapeHtml(s.fallbackReason)}</li>` : '';
 
       summaryList.innerHTML = `
         <li>Spedizioni verificate: <strong>${s.checked || 0}</strong> di ${s.totalCandidates || 0}${cancelledText}</li>
         <li>Esito: ${deliveredText}${errorsText}</li>
+        <li>Profilo utilizzato: <strong>${profileText}</strong></li>
+        ${fallbackText}
         <li>Durata: <strong>${s.durationSeconds || 0}s</strong> · Eseguito: ${displayDateTime(s.at)}</li>
       `;
     }
@@ -1343,6 +1392,11 @@ function setupWorkspace() {
     if (betaDescription) betaDescription.textContent = 'Configura il browser locale usato per leggere lo stato pubblico delle spedizioni DSV.';
     const betaPill = dsvBetaCard.querySelector('.beta-pill');
     if (betaPill) betaPill.textContent = 'SERVIZIO LOCALE';
+    const betaConfig = dsvBetaCard.querySelector('.beta-config');
+    const speedPicker = document.createElement('fieldset');
+    speedPicker.className = 'camofox-speed-picker';
+    speedPicker.innerHTML = '<legend>Velocità delle verifiche</legend><div class="camofox-speed-options"><label class="camofox-speed-option"><input id="dsv-speed-safe" name="dsv-speed-profile" type="radio" value="safe" checked><span><strong>Affidabile <small>Consigliato</small></strong><span>Una nuova scheda per ogni spedizione e pause più ampie.</span></span></label><label class="camofox-speed-option"><input id="dsv-speed-fast" name="dsv-speed-profile" type="radio" value="fast"><span><strong>Rapido controllato</strong><span>Riutilizza la scheda e riduce le attese. Torna automaticamente alla modalità affidabile se DSV diventa instabile.</span></span></label></div><p class="camofox-speed-note">Entrambi i profili elaborano una sola spedizione alla volta. La modifica si applica dal ciclo successivo.</p>';
+    betaConfig?.insertAdjacentElement('afterend', speedPicker);
     const importActions = importCard.querySelector(':scope > .actions');
     const verifyDsvButton = $('#verify-dsv-beta');
     const dsvProgress = $('#dsv-progress');
@@ -2591,8 +2645,15 @@ async function openShipmentDetail(trackingNumber) {
     delete panel.dataset.empty;
     const fallbackTrackingUrl = `https://www.dsv.com/mydsv/tracking-public/?refNumber=${encodeURIComponent(shipment.trackingNumber)}&language_region=it-IT_IT`;
     const trackingUrl = shipment.dsvTrackingUrl || fallbackTrackingUrl;
-    const dsvTimeline = Array.isArray(shipment.dsvTimeline) ? shipment.dsvTimeline : [];
+    const dsvTimeline = shipmentDetailTimeline(shipment);
+    const mappedState = mappedPrestaShopState(shipment);
+    const canUpdateOrderState = Boolean(shipment.orderId) && !isPrestaShopStateAligned(shipment);
     panel.innerHTML = `<div class="detail-heading"><div><span class="detail-kicker">Dettaglio spedizione</span><h2 id="shipment-detail-title" class="detail-title-row">${copyableValue(shipment.trackingNumber, 'Numero spedizione', 'detail-tracking-btn')}</h2><span class="detail-order">Ordine ${copyableValue(shipment.orderReference, 'Riferimento ordine', 'detail-order-btn')}</span></div><button id="close-shipment-detail" type="button" class="detail-close" aria-label="Chiudi dettaglio"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg></button></div><div class="detail-status-row">${controlBadge(shipment.operationalStatus)}${shipment.archived ? '<span class="control-status archived"><span class="status-dot" aria-hidden="true"></span>Archiviata</span>' : ''}<div class="detail-dsv-state">${dsvBadge(shipment.dsvStatus)}<small>Evento DSV: ${displayDsvEventDate(shipment)}</small></div></div><dl class="shipment-facts"><div><dt>PrestaShop</dt><dd>${escapeHtml(shipment.currentState || '—')}</dd></div><div><dt>Ultimo controllo</dt><dd>${displayDateTime(shipment.dsvCheckedAt || shipment.lastSeenAt)}</dd></div><div><dt>Gestione</dt><dd>${caseBadge(shipment.caseStatus)}</dd></div><div><dt>Assegnata a</dt><dd>${escapeHtml(shipment.assignee || 'Non assegnata')}</dd></div></dl><div id="detail-prestashop-sync" class="detail-prestashop-sync-card"><div class="sync-loading-skeleton"><span class="sync-live-dot loading" aria-hidden="true"></span><span>Verifica stato PrestaShop in corso…</span></div></div><div class="detail-actions"><button id="verify-single-dsv" type="button" ${dsvBetaSettings?.enabled ? '' : 'disabled'}>${shipment.archived ? 'Forza verifica DSV' : 'Verifica nuovamente'}</button><button id="toggle-archive-shipment" type="button" class="secondary archive-action-btn" title="${shipment.archived ? 'Ripristina tra le spedizioni attive' : 'Archivia la spedizione per escluderla dai controlli automatici'}">${shipment.archived ? '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 5.5h12v8.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5.5z"/><path d="M1 2.5h14v3H1z"/><path d="m6 9.5 2-2 2 2"/><path d="M8 7.5v5"/></svg><span>Ripristina spedizione</span>' : '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 5.5h12v8.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5.5z"/><path d="M1 2.5h14v3H1z"/><path d="M6 9.5h4"/></svg><span>Archivia spedizione</span>'}</button><a class="dsv-external-link" href="${escapeHtml(trackingUrl)}" target="_blank" rel="noopener noreferrer">Apri tracking DSV <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 5h9v9M19 5l-9 9M14 19H5V10"/></svg></a></div>${dsvTimeline.length ? `<section class="dsv-history"><div class="detail-section-heading"><h4>Storico DSV</h4><span>${dsvTimeline.length} eventi</span></div><ol class="dsv-timeline">${dsvTimeline.slice().reverse().map((event) => `<li><span class="event-marker" aria-hidden="true"></span><div><div class="dsv-event-heading"><strong>${escapeHtml(event.event || 'Evento DSV')}</strong><time>${escapeHtml(event.date || '—')}</time></div><span>${escapeHtml([event.country, event.location].filter(Boolean).join(' · ') || 'Località non disponibile')}</span>${event.reason ? `<small>${escapeHtml(event.reason)}</small>` : ''}</div></li>`).join('')}</ol></section>` : `<section class="dsv-history dsv-history-empty"><div><strong>Storico DSV non ancora acquisito</strong><span>Ripeti la verifica per importare gli eventi disponibili.</span></div><a href="${escapeHtml(trackingUrl)}" target="_blank" rel="noopener noreferrer">Consulta su DSV</a></section>`}<form id="shipment-case-form" class="shipment-case"><div class="detail-section-heading"><h4>Gestione eccezione</h4><span>Uso interno</span></div><div class="case-fields"><label>Stato<select id="case-status"><option${!shipment.caseStatus ? ' selected' : ''}>Aperta</option><option${shipment.caseStatus === 'In lavorazione' ? ' selected' : ''}>In lavorazione</option><option${shipment.caseStatus === 'Risolta' ? ' selected' : ''}>Risolta</option><option${shipment.caseStatus === 'Ignorata' ? ' selected' : ''}>Ignorata</option></select></label><label>Assegnata a<input id="case-assignee" maxlength="120" value="${escapeHtml(shipment.assignee || '')}" placeholder="Nome operatore"></label></div><label>Nota interna<textarea id="case-note" maxlength="2000" rows="3" placeholder="Aggiungi contesto per il prossimo operatore…">${escapeHtml(shipment.note || '')}</textarea></label><button>Salva gestione</button></form><section class="detail-history"><div class="detail-section-heading"><h4>Cronologia locale</h4><span>${(shipment.events || []).length} eventi</span></div><ol class="shipment-events">${(shipment.events || []).slice().reverse().map((event) => `<li><span class="event-marker" aria-hidden="true"></span><div><time>${displayDateTime(event.at)}</time><strong>${escapeHtml(event.label)}</strong><span>${escapeHtml(event.detail || event.type)}</span></div></li>`).join('') || '<li class="detail-empty">Nessun evento disponibile.</li>'}</ol></section>`;
+    panel.querySelector('.dsv-history').outerHTML = renderShipmentDsvTimeline(dsvTimeline, trackingUrl);
+    if (canUpdateOrderState) {
+      panel.querySelector('.detail-actions').insertAdjacentHTML('afterbegin', `<button id="update-detail-prestashop-state" type="button" title="${escapeHtml(mappedState ? `Imposta ${mappedState.stateName} su PrestaShop` : 'Scegli il nuovo stato PrestaShop')}">Aggiorna stato ordine${mappedState ? `<small>${escapeHtml(mappedState.stateName)}</small>` : ''}</button>`);
+      panel.querySelector('#verify-single-dsv').classList.add('secondary');
+    }
     const heading = panel.querySelector('.detail-heading');
     heading.setAttribute('tabindex', '-1');
     const dialogBody = document.createElement('div');
@@ -2610,6 +2671,7 @@ async function openShipmentDetail(trackingNumber) {
     $('#close-shipment-detail').addEventListener('click', closeControlDetail);
     setTimeout(() => heading.focus(), 0);
     loadPrestaShopLiveSync(shipment, requestToken);
+    $('#update-detail-prestashop-state')?.addEventListener('click', () => openPrestaShopStateDialog(shipment.trackingNumber));
     $('#verify-single-dsv').addEventListener('click', async () => {
       const button = $('#verify-single-dsv'); button.disabled = true;
       try { await startControlDsvVerification([shipment.trackingNumber]); await openShipmentDetail(shipment.trackingNumber); }
@@ -2980,11 +3042,16 @@ $('#apply-import').addEventListener('click', async () => {
 });
 
 $('#save-dsv-beta').addEventListener('click', async () => {
+  const button = $('#save-dsv-beta');
   try {
-    const data = await request('/api/dsv-beta/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: $('#dsv-beta-enabled').checked, camofoxUrl: $('#dsv-camofox-url').value, trackingUrl: $('#dsv-tracking-url').value }) });
+    button.disabled = true;
+    const speedProfile = document.querySelector('input[name="dsv-speed-profile"]:checked')?.value || 'safe';
+    const data = await request('/api/dsv-beta/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: $('#dsv-beta-enabled').checked, camofoxUrl: $('#dsv-camofox-url').value, trackingUrl: $('#dsv-tracking-url').value, speedProfile }) });
     dsvBetaSettings = data; updateControlServiceStatus(); updateSelectionUi(); updateControlSelectionUi([...document.querySelectorAll('.control-row-select')].map((input) => ({ trackingNumber: input.dataset.tracking })));
-    tell('#dsv-config-message', data.enabled ? `Servizio attivo: massimo ${data.maxRows} righe per blocco, una richiesta ogni ${data.intervalMs / 1000} secondi, cache fino a ${data.cacheHours} ore.` : 'Configurazione salvata; servizio disattivato.', data.enabled ? 'warning' : '');
+    const modeLabel = data.speedProfile === 'fast' ? 'Rapido controllato' : 'Affidabile';
+    tell('#dsv-config-message', data.enabled ? `Servizio attivo in modalità ${modeLabel}. Una spedizione alla volta, pausa media ${data.intervalMs / 1000} secondi.` : 'Configurazione salvata; servizio disattivato.', 'success');
   } catch (e) { tell('#dsv-config-message', e.message, 'error'); }
+  finally { button.disabled = false; }
 });
 
 $('#test-dsv-beta').addEventListener('click', async () => {
@@ -3001,14 +3068,15 @@ $('#verify-dsv-beta').addEventListener('click', async () => {
   if (!confirm(`Avvia la verifica pubblica DSV per ${selected.length} spedizioni? Non verrà modificato alcun ordine.`)) return;
   try {
     $('#verify-dsv-beta').disabled = true; updateDsvProgress({ completed: 0, total: selected.length });
-    tell('#dsv-beta-message', 'Verifica lenta e sequenziale in corso: una spedizione ogni 5 secondi.');
+    tell('#dsv-beta-message', `Verifica sequenziale in corso · ${dsvBetaSettings.speedProfile === 'fast' ? 'modalità rapida' : 'modalità affidabile'}.`);
     const { jobId } = await request('/api/dsv-beta/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trackingNumbers: selected.map((row) => row.trackingNumber) }) });
     const { results, safeguards } = await waitForDsvBeta(jobId);
     const byTracking = new Map(results.map((result) => [result.trackingNumber, result]));
     previewRows = previewRows.map((row) => { const result = byTracking.get(row.trackingNumber); return result ? { ...row, dsvBetaStatus: result.status, dsvBetaDetail: result.detail } : row; });
     renderRows(previewRows, 'verification'); updateSelectionUi(); void refreshControlCenter();
     const cached = results.filter((row) => row.cached).length;
-    tell('#dsv-beta-message', `${results.length} spedizioni controllate${cached ? `, ${cached} da cache` : ''}. Limiti applicati: ${safeguards.maxRows} righe, ${safeguards.intervalMs / 1000}s tra richieste, cache fino a ${safeguards.cacheHours}h.`, 'success');
+    const fallback = safeguards.fallbackReason ? ` ${safeguards.fallbackReason}` : '';
+    tell('#dsv-beta-message', `${results.length} spedizioni controllate${cached ? `, ${cached} da cache` : ''}. Modalità effettiva: ${safeguards.effectiveSpeedProfile === 'fast' ? 'rapida' : 'affidabile'}.${fallback}`, safeguards.fallbackReason ? 'warning' : 'success');
   } catch (e) { tell('#dsv-beta-message', e.message, 'error'); }
   finally { $('#verify-dsv-beta').disabled = false; }
 });
