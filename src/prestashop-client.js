@@ -4,6 +4,7 @@ function trimSlash(value) {
 
 const REQUEST_INTERVAL_MS = 800;
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
+const RETRYABLE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 class RequestGate {
   constructor(intervalMs) {
@@ -45,15 +46,17 @@ export class PrestaShopClient {
   }
 
   async fetchWithRetry(url, options) {
+    const method = String(options?.method || 'GET').toUpperCase();
+    const maxAttempts = RETRYABLE_METHODS.has(method) ? 3 : 1;
     let lastError;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       try {
         const response = await requestGate.run(() => fetch(url, options));
-        if (!RETRYABLE_STATUSES.has(response.status) || attempt === 2) return response;
+        if (!RETRYABLE_STATUSES.has(response.status) || attempt === maxAttempts - 1) return response;
         lastError = new Error(`PrestaShop ha risposto ${response.status}`);
       } catch (error) {
         lastError = error;
-        if (attempt === 2) throw error;
+        if (attempt === maxAttempts - 1) throw error;
       }
       await delay(1000 * (attempt + 1));
     }
@@ -213,6 +216,34 @@ export class PrestaShopClient {
     }
     if (updateState) await this.sendXml('order_histories', 'POST', resourceXml('order_history', { id_order: orderId, id_order_state: stateId }), { sendemail: '0' });
     return { trackingSkipped };
+  }
+
+  async getOrderCurrentState(orderId) {
+    const payload = await this.request(`orders/${encodeURIComponent(orderId)}`);
+    const stateId = String(payload?.order?.current_state ?? '').trim();
+    if (!stateId) throw new Error(`PrestaShop non ha restituito lo stato corrente dell’ordine ${orderId}.`);
+    return stateId;
+  }
+
+  async applyOrderStateSafely({ orderId, stateId }) {
+    const targetStateId = String(stateId || '').trim();
+    if (!targetStateId) throw new Error('Stato PrestaShop di destinazione mancante.');
+
+    const currentStateId = await this.getOrderCurrentState(orderId);
+    if (currentStateId === targetStateId) return { alreadyApplied: true, recoveredAfterError: false };
+
+    try {
+      await this.applyOrderUpdate({ orderId, stateId: targetStateId, updateState: true, updateTracking: false });
+      return { alreadyApplied: false, recoveredAfterError: false };
+    } catch (error) {
+      try {
+        const stateAfterError = await this.getOrderCurrentState(orderId);
+        if (stateAfterError === targetStateId) return { alreadyApplied: false, recoveredAfterError: true };
+      } catch {
+        // Conserva l'errore originale: una seconda POST automatica potrebbe duplicare lo storico.
+      }
+      throw error;
+    }
   }
 
   async getOrderLiveShippingInfo({ orderId, orderReference }) {

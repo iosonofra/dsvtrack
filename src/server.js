@@ -25,6 +25,7 @@ const DSV_BETA_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const DSV_MOVING_CACHE_TTL_MS = 2 * 60 * 60 * 1000;
 const DSV_NOT_FOUND_CACHE_TTL_MS = 60 * 60 * 1000;
 const dsvBetaCache = new Map();
+const prestashopOrderStateLocks = new Map();
 
 function naturalJitterInterval() {
   return 2000 + Math.floor(Math.random() * 1200);
@@ -52,12 +53,7 @@ const cronService = new DsvCronService({
   loadShipments: exportShipmentsData,
   syncDsvShipments,
   applyOrderState: async ({ orderId, stateId }) => {
-    await client().applyOrderUpdate({
-      orderId,
-      stateId,
-      updateState: true,
-      updateTracking: false,
-    });
+    await withPrestaShopOrderStateLock(orderId, () => client().applyOrderStateSafely({ orderId, stateId }));
   },
   syncManualState: syncManualPrestaShopState,
   notificationService,
@@ -71,6 +67,45 @@ app.use(express.static('public'));
 function client() {
   if (!connection.baseUrl || !connection.apiKey) throw new Error('Inserisci URL e chiave Webservice di PrestaShop.');
   return new PrestaShopClient(connection);
+}
+
+async function withPrestaShopOrderStateLock(orderId, operation) {
+  const key = String(orderId);
+  const previous = prestashopOrderStateLocks.get(key) || Promise.resolve();
+  const current = previous.catch(() => {}).then(operation);
+  prestashopOrderStateLocks.set(key, current);
+  try {
+    return await current;
+  } finally {
+    if (prestashopOrderStateLocks.get(key) === current) prestashopOrderStateLocks.delete(key);
+  }
+}
+
+async function alignShipmentPrestaShopState({ trackingNumber, stateId, targetState, shop }) {
+  const initialShipment = await getShipment(trackingNumber);
+  if (!initialShipment) throw new Error('Spedizione non presente nel centro di controllo.');
+  if (!initialShipment.orderId) throw new Error('La spedizione non è collegata a un ordine PrestaShop aggiornabile.');
+
+  return withPrestaShopOrderStateLock(initialShipment.orderId, async () => {
+    const shipment = await getShipment(trackingNumber);
+    if (!shipment) throw new Error('Spedizione non presente nel centro di controllo.');
+    const sameStateId = shipment.prestaStateId && String(shipment.prestaStateId) === String(stateId);
+    const sameStateName = String(shipment.currentState || '').trim().toLocaleLowerCase('it-IT') === String(targetState.name || '').trim().toLocaleLowerCase('it-IT');
+    if (sameStateId || sameStateName) {
+      return { shipment, skipped: true, message: `L’ordine è già nello stato “${targetState.name}”. Nessun aggiornamento inviato.` };
+    }
+
+    const outcome = await shop.applyOrderStateSafely({ orderId: shipment.orderId, stateId });
+    const updated = await syncManualPrestaShopState(shipment.trackingNumber, { stateId, stateName: targetState.name });
+    return {
+      shipment: updated,
+      skipped: Boolean(outcome.alreadyApplied),
+      recoveredAfterError: Boolean(outcome.recoveredAfterError),
+      message: outcome.alreadyApplied
+        ? `PrestaShop risultava già nello stato “${targetState.name}”. Archivio locale riallineato senza creare un nuovo evento remoto.`
+        : `Ordine aggiornato allo stato “${targetState.name}”. Nessuna email inviata.`,
+    };
+  });
 }
 
 app.get('/api/config', (_req, res) => res.json({ baseUrl: connection.baseUrl, configured: Boolean(connection.apiKey) }));
@@ -478,21 +513,13 @@ app.patch('/api/control-center/:trackingNumber/case', async (req, res) => {
 
 app.post('/api/control-center/:trackingNumber/prestashop-state', async (req, res) => {
   try {
-    const shipment = await getShipment(req.params.trackingNumber);
-    if (!shipment) throw new Error('Spedizione non presente nel centro di controllo.');
-    if (!shipment.orderId) throw new Error('La spedizione non è collegata a un ordine PrestaShop aggiornabile.');
     const stateId = String(req.body?.stateId || '').trim();
     if (!stateId) throw new Error('Seleziona lo stato PrestaShop di destinazione.');
     const shop = client();
     const states = await shop.listOrderStates();
     const targetState = states.find((state) => String(state.id) === stateId);
     if (!targetState) throw new Error('Lo stato PrestaShop selezionato non è disponibile.');
-    const sameStateId = shipment.prestaStateId && String(shipment.prestaStateId) === stateId;
-    const sameStateName = String(shipment.currentState || '').trim().toLocaleLowerCase('it-IT') === String(targetState.name || '').trim().toLocaleLowerCase('it-IT');
-    if (sameStateId || sameStateName) return res.json({ shipment, message: `L’ordine è già nello stato “${targetState.name}”. Nessun aggiornamento inviato.` });
-    await shop.applyOrderUpdate({ orderId: shipment.orderId, trackingNumber: shipment.trackingNumber, carrierId: '', stateId, updateTracking: false, updateState: true });
-    const updated = await syncManualPrestaShopState(shipment.trackingNumber, { stateId, stateName: targetState.name });
-    res.json({ shipment: updated, message: `Ordine aggiornato allo stato “${targetState.name}”. Nessuna email inviata.` });
+    res.json(await alignShipmentPrestaShopState({ trackingNumber: req.params.trackingNumber, stateId, targetState, shop }));
   } catch (error) { res.status(400).json({ error: error.message }); }
 });
 
@@ -517,23 +544,8 @@ app.post('/api/control-center/bulk-prestashop-state', async (req, res) => {
         const targetState = statesMap.get(stateId);
         if (!targetState) throw new Error('Lo stato PrestaShop selezionato non è disponibile.');
 
-        const sameStateId = shipment.prestaStateId && String(shipment.prestaStateId) === stateId;
-        const sameStateName = String(shipment.currentState || '').trim().toLocaleLowerCase('it-IT') === String(targetState.name || '').trim().toLocaleLowerCase('it-IT');
-        if (sameStateId || sameStateName) {
-          results.push({ trackingNumber: tracking, orderId: shipment.orderId, success: true, skipped: true, shipment, message: `L’ordine era già nello stato “${targetState.name}”.` });
-          continue;
-        }
-
-        await shop.applyOrderUpdate({
-          orderId: shipment.orderId,
-          trackingNumber: shipment.trackingNumber,
-          carrierId: '',
-          stateId,
-          updateTracking: false,
-          updateState: true,
-        });
-        const updated = await syncManualPrestaShopState(shipment.trackingNumber, { stateId, stateName: targetState.name });
-        results.push({ trackingNumber: tracking, orderId: shipment.orderId, success: true, shipment: updated, message: `Stato aggiornato a “${targetState.name}”.` });
+        const outcome = await alignShipmentPrestaShopState({ trackingNumber: tracking, stateId, targetState, shop });
+        results.push({ trackingNumber: tracking, orderId: shipment.orderId, success: true, ...outcome });
       } catch (err) {
         results.push({ trackingNumber: tracking, success: false, error: err.message });
       }

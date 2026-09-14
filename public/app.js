@@ -1769,6 +1769,8 @@ function categorizeSelectedShipments(forcedState = null) {
   const skippedAlreadyAligned = [];
   const skippedNoOrder = [];
   const skippedUnmapped = [];
+  const skippedDuplicateOrders = [];
+  const actionableOrderIds = new Set();
 
   for (const row of selectedRows) {
     if (!row.orderId) {
@@ -1783,6 +1785,11 @@ function categorizeSelectedShipments(forcedState = null) {
         skippedAlreadyAligned.push(row);
         continue;
       }
+      if (actionableOrderIds.has(String(row.orderId))) {
+        skippedDuplicateOrders.push(row);
+        continue;
+      }
+      actionableOrderIds.add(String(row.orderId));
       actionable.push({
         shipment: row,
         targetStateId: String(forcedState.id),
@@ -1798,6 +1805,11 @@ function categorizeSelectedShipments(forcedState = null) {
         skippedAlreadyAligned.push(row);
         continue;
       }
+      if (actionableOrderIds.has(String(row.orderId))) {
+        skippedDuplicateOrders.push(row);
+        continue;
+      }
+      actionableOrderIds.add(String(row.orderId));
       actionable.push({
         shipment: row,
         targetStateId: String(mapped.stateId),
@@ -1806,7 +1818,7 @@ function categorizeSelectedShipments(forcedState = null) {
     }
   }
 
-  return { selectedRows, actionable, skippedAlreadyAligned, skippedNoOrder, skippedUnmapped };
+  return { selectedRows, actionable, skippedAlreadyAligned, skippedNoOrder, skippedUnmapped, skippedDuplicateOrders };
 }
 
 function renderBulkPreview() {
@@ -1817,7 +1829,7 @@ function renderBulkPreview() {
     forcedState = prestaShopStateCatalog.find((s) => String(s.id) === String(mode)) || null;
   }
 
-  const { actionable, skippedAlreadyAligned, skippedNoOrder, skippedUnmapped } = categorizeSelectedShipments(forcedState);
+  const { actionable, skippedAlreadyAligned, skippedNoOrder, skippedUnmapped, skippedDuplicateOrders } = categorizeSelectedShipments(forcedState);
 
   const isForced = Boolean(forcedState);
   const notice = $('#prestashop-bulk-forced-notice');
@@ -1828,7 +1840,7 @@ function renderBulkPreview() {
     targetGroups[item.targetStateName] = (targetGroups[item.targetStateName] || 0) + 1;
   }
 
-  const skippedTotal = skippedAlreadyAligned.length + skippedNoOrder.length + skippedUnmapped.length;
+  const skippedTotal = skippedAlreadyAligned.length + skippedNoOrder.length + skippedUnmapped.length + skippedDuplicateOrders.length;
 
   let previewHtml = `
     <div class="prestashop-bulk-cards">
@@ -1853,6 +1865,7 @@ function renderBulkPreview() {
         </div>
         <div class="prestashop-bulk-list">
           ${skippedAlreadyAligned.length ? `<div class="prestashop-bulk-item"><span>${isForced ? 'Già in questo stato' : 'Già allineate'}</span><strong>${skippedAlreadyAligned.length}</strong></div>` : ''}
+          ${skippedDuplicateOrders.length ? `<div class="prestashop-bulk-item"><span>Duplicati dello stesso ordine</span><strong>${skippedDuplicateOrders.length}</strong></div>` : ''}
           ${skippedNoOrder.length ? `<div class="prestashop-bulk-item"><span>Senza ordine PrestaShop</span><strong>${skippedNoOrder.length}</strong></div>` : ''}
           ${skippedUnmapped.length ? `<div class="prestashop-bulk-item"><span>Stato DSV non mappato</span><strong>${skippedUnmapped.length}</strong></div>` : ''}
           ${skippedTotal === 0 ? '<span class="prestashop-bulk-empty-note">Nessuna esclusa</span>' : ''}
