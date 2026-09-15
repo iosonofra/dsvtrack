@@ -69,6 +69,7 @@ function operationalStatus(record) {
 export function matchesOperationalStatus(recordStatus, requestedStatus) {
   if (!requestedStatus) return true;
   if (requestedStatus === 'Da verificare') return ['In attesa di verifica DSV', 'Verifica incompleta'].includes(recordStatus);
+  if (requestedStatus === 'In movimento') return ['Centro di distribuzione', 'In transito', 'In consegna'].includes(recordStatus);
   return recordStatus === requestedStatus;
 }
 
@@ -231,7 +232,7 @@ export async function linkShipmentToPrestaShopOrder(trackingNumber, {
   return { ...record, archived: Boolean(record.archived), dsvStatus: normalizeStoredDsvStatus(record.dsvStatus), operationalStatus: operationalStatus(record) };
 }
 
-export async function getControlCenter({ query = '', status = '', dsvStatus = '', checkedAfter = '', exceptionOnly = false, archived = false } = {}) {
+export async function getControlCenter({ query = '', status = '', dsvStatus = '', prestaState = '', checkedAfter = '', exceptionOnly = false, archived = false, page = 1, pageSize = 50 } = {}) {
   const db = await load();
   const needle = String(query).trim().toLocaleLowerCase('it-IT');
   const isArchivedView = archived === true || archived === '1' || archived === 'true' || dsvStatus === 'Archiviate';
@@ -248,13 +249,28 @@ export async function getControlCenter({ query = '', status = '', dsvStatus = ''
 
   const targetRecords = isArchivedView ? archivedRecords : activeRecords;
 
-  const filtered = targetRecords.filter((record) => {
+  const filteredWithoutPrestaState = targetRecords.filter((record) => {
     const matchesQuery = !needle || [record.trackingNumber, record.orderReference, record.orderId, record.dsvStatus].some((value) => String(value || '').toLocaleLowerCase('it-IT').includes(needle));
     const matchesStatus = matchesOperationalStatus(record.operationalStatus, status);
     const matchesDsvStatus = (!dsvStatus || dsvStatus === 'Archiviate') ? true : (record.dsvStatus || 'Non verificato') === dsvStatus;
     const matchesCheckedAfter = !checkedAfter || String(record.dsvCheckedAt || record.lastSeenAt || '') >= `${checkedAfter}T00:00:00.000Z`;
-    const isException = record.operationalStatus === 'Da gestire';
+    const isException = ['Da gestire', 'Verifica incompleta'].includes(record.operationalStatus);
     return matchesQuery && matchesStatus && matchesDsvStatus && matchesCheckedAfter && (!exceptionOnly || isException);
+  });
+
+  const prestaStateCounts = filteredWithoutPrestaState.reduce((output, record) => {
+    const label = !record.orderId
+      ? 'Ordine non collegato'
+      : String(record.currentState || '').trim() || 'Stato non disponibile';
+    output[label] = (output[label] || 0) + 1;
+    return output;
+  }, {});
+  const normalizedPrestaState = String(prestaState || '').trim();
+  const filtered = filteredWithoutPrestaState.filter((record) => {
+    if (!normalizedPrestaState) return true;
+    if (normalizedPrestaState === '__unlinked__') return !record.orderId;
+    if (normalizedPrestaState === '__unavailable__') return Boolean(record.orderId) && !String(record.currentState || '').trim();
+    return String(record.currentState || '').trim().toLocaleLowerCase('it-IT') === normalizedPrestaState.toLocaleLowerCase('it-IT');
   }).sort((a, b) => String(b.lastSeenAt).localeCompare(String(a.lastSeenAt)));
 
   const counts = activeRecords.reduce((output, record) => {
@@ -263,14 +279,25 @@ export async function getControlCenter({ query = '', status = '', dsvStatus = ''
   }, {});
 
   const dsvCounts = buildDsvStatusCounts(activeRecords);
+  const normalizedPageSize = Math.min(500, Math.max(1, Number.parseInt(pageSize, 10) || 50));
+  const filteredTotal = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(filteredTotal / normalizedPageSize));
+  const normalizedPage = Math.min(totalPages, Math.max(1, Number.parseInt(page, 10) || 1));
+  const offset = (normalizedPage - 1) * normalizedPageSize;
 
   return {
     counts,
     dsvCounts,
+    prestaStateCounts,
+    prestaStateFacetTotal: filteredWithoutPrestaState.length,
     archivedCount,
     total: activeRecords.length,
     viewTotal: targetRecords.length,
-    records: filtered.slice(0, 500),
+    filteredTotal,
+    page: normalizedPage,
+    pageSize: normalizedPageSize,
+    totalPages,
+    records: filtered.slice(offset, offset + normalizedPageSize),
   };
 }
 
@@ -365,6 +392,7 @@ export async function registerImportBatch({
 } = {}) {
   const db = await load();
   db.batches ||= [];
+  db.batchHistoryInitialized = true;
   const id = `batch-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const batch = {
     id,
@@ -387,7 +415,7 @@ export async function getImportBatches() {
   db.batches ||= [];
 
   let batches = db.batches;
-  if (!batches.length && Object.keys(db.shipments || {}).length > 0) {
+  if (!batches.length && !db.batchHistoryInitialized && Object.keys(db.shipments || {}).length > 0) {
     const groups = new Map();
     for (const record of Object.values(db.shipments)) {
       const dateKey = (record.lastImportedAt || record.lastSeenAt || '2026-09-12').slice(0, 10);
@@ -408,7 +436,8 @@ export async function getImportBatches() {
   }
 
   const shipments = db.shipments || {};
-  return batches.map((batch) => {
+  const deletedLegacyBatchIds = new Set(db.deletedLegacyBatchIds || []);
+  return batches.filter((batch) => !deletedLegacyBatchIds.has(batch.id)).map((batch) => {
     const trackings = Array.isArray(batch.trackingNumbers) ? batch.trackingNumbers : [];
     let consegnate = 0;
     let inTransito = 0;
@@ -436,6 +465,26 @@ export async function getImportBatches() {
       },
     };
   });
+}
+
+export async function deleteImportBatch(batchId) {
+  const normalizedId = String(batchId || '').trim();
+  if (!normalizedId || normalizedId.length > 160) throw new Error('Identificativo lotto non valido.');
+  const db = await load();
+  db.batches ||= [];
+  const index = db.batches.findIndex((batch) => batch.id === normalizedId);
+  if (index < 0) {
+    const visibleBatch = (await getImportBatches()).find((batch) => batch.id === normalizedId);
+    if (!visibleBatch?.isLegacy) throw new Error('Lotto di importazione non trovato.');
+    db.deletedLegacyBatchIds ||= [];
+    if (!db.deletedLegacyBatchIds.includes(normalizedId)) db.deletedLegacyBatchIds.push(normalizedId);
+    await persist();
+    return visibleBatch;
+  }
+  const [deleted] = db.batches.splice(index, 1);
+  db.batchHistoryInitialized = true;
+  await persist();
+  return deleted;
 }
 
 export async function getAuditLog({ type = '', query = '', dateFrom = '', dateTo = '', limit = 300 } = {}) {
@@ -487,4 +536,3 @@ export async function getAuditLog({ type = '', query = '', dateFrom = '', dateTo
     events: filtered.slice(0, Math.max(10, Number(limit) || 300)),
   };
 }
-

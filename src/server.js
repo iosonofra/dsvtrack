@@ -8,7 +8,7 @@ import { exportSettingsData, loadSettings, normalizeCronSettings, normalizeDsvSt
 import { DEFAULT_DSV_TRACKING_URL, DSV_PARSER_VERSION, DSV_SPEED_PROFILES, DsvBetaClient, normalizeBetaSettings } from './dsv-beta-client.js';
 import { DsvCronService } from './dsv-cron.js';
 import { NotificationService } from './notification-service.js';
-import { archiveShipment, deleteArchivedShipment, exportShipmentsData, getAuditLog, getControlCenter, getExistingShipmentsIndex, getImportBatches, getShipment, linkShipmentToPrestaShopOrder, registerImportBatch, restoreShipmentsData, syncAppliedShipments, syncDsvShipments, syncManualPrestaShopState, syncShipmentPrestaShopShipping, syncVerifiedShipments, updateShipmentCase } from './shipment-store.js';
+import { archiveShipment, deleteArchivedShipment, deleteImportBatch, exportShipmentsData, getAuditLog, getControlCenter, getExistingShipmentsIndex, getImportBatches, getShipment, linkShipmentToPrestaShopOrder, registerImportBatch, restoreShipmentsData, syncAppliedShipments, syncDsvShipments, syncManualPrestaShopState, syncShipmentPrestaShopShipping, syncVerifiedShipments, updateShipmentCase } from './shipment-store.js';
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
@@ -414,6 +414,16 @@ app.get('/api/history/batches', async (req, res) => {
   }
 });
 
+app.delete('/api/history/batches/:batchId', async (req, res) => {
+  try {
+    const batch = await deleteImportBatch(req.params.batchId);
+    res.json({ ok: true, batchId: batch.id, message: 'Lotto eliminato dallo storico. Le spedizioni collegate non sono state modificate.' });
+  } catch (error) {
+    const status = /non trovato/i.test(error.message) ? 404 : 400;
+    res.status(status).json({ error: error.message });
+  }
+});
+
 app.get('/api/history/batches/:batchId/export', async (req, res) => {
   try {
     const batches = await getImportBatches();
@@ -505,9 +515,12 @@ app.get('/api/control-center', async (req, res) => {
       query: req.query.query,
       status: req.query.status,
       dsvStatus: req.query.dsvStatus,
+      prestaState: req.query.prestaState,
       checkedAfter: req.query.checkedAfter,
       exceptionOnly: req.query.exceptions === '1',
       archived: req.query.archived === '1' || req.query.archived === 'true',
+      page: req.query.page,
+      pageSize: req.query.pageSize,
     });
     res.json({ ...result, stateMappings: normalizeDsvStateMappings(connection.dsvStateMappings) });
   } catch (error) { res.status(500).json({ error: error.message }); }

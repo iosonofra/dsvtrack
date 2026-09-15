@@ -9,6 +9,10 @@ let activeView = 'control';
 let controlSelectedTrackingNumbers = new Set();
 let controlRecords = [];
 let controlPage = 1;
+let controlMetricFilter = 'all';
+let controlPrestaStateFilter = '';
+const PRESTA_UNLINKED_FILTER = '__unlinked__';
+const PRESTA_UNAVAILABLE_FILTER = '__unavailable__';
 const CONTROL_PAGE_SIZE = 50;
 let controlOverview = { records: [], total: 0, counts: {} };
 let activeControlTrackingNumber = '';
@@ -351,11 +355,12 @@ function isPrestaShopStateAligned(row) {
 }
 
 function prestaShopStateAction(row) {
+  if (row.archived) return '<span class="state-unavailable">Archiviata</span>';
   if (isPrestaShopStateAligned(row)) return '<span class="state-aligned">Allineato</span>';
-  if (!row.orderId) return '<span class="state-unavailable">Non collegato</span>';
+  if (!row.orderId) return `<button class="link-prestashop-order update-prestashop-state" data-tracking="${escapeHtml(row.trackingNumber)}" type="button" aria-label="Collega un ordine PrestaShop alla spedizione ${escapeHtml(row.trackingNumber)}">Collega ordine</button>`;
   const mapped = mappedPrestaShopState(row);
-  const label = mapped ? 'Aggiorna' : 'Scegli stato';
-  return `<button class="update-prestashop-state" data-tracking="${escapeHtml(row.trackingNumber)}" type="button" aria-label="${label} PrestaShop per ${escapeHtml(row.trackingNumber)}">${label}</button>`;
+  if (!mapped) return '<span class="state-unavailable mapping-missing">Non mappato</span>';
+  return `<button class="update-prestashop-state" data-tracking="${escapeHtml(row.trackingNumber)}" type="button" aria-label="Aggiorna PrestaShop per ${escapeHtml(row.trackingNumber)}">Aggiorna</button>`;
 }
 
 function normalizedDsvJourneyStage(value) {
@@ -419,10 +424,11 @@ function dsvFilterKind(status) {
   return 'unmapped';
 }
 
-function renderDsvStatusFilters(counts = {}, archivedCount = 0) {
+function renderDsvStatusFilters(counts = {}, archivedCount = 0, attentionTotal = null) {
   const bar = $('#control-quick-filters');
   if (!bar) return;
   const activeStatus = $('#control-dsv-filter')?.value || '';
+  const exceptionActive = Boolean($('#control-exceptions')?.checked);
   const total = Object.values(counts).reduce((sum, count) => sum + Number(count || 0), 0);
   const statuses = Object.keys(counts).filter((status) => counts[status] > 0).sort((left, right) => {
     const leftIndex = DSV_STATUS_ORDER.indexOf(left);
@@ -432,8 +438,21 @@ function renderDsvStatusFilters(counts = {}, archivedCount = 0) {
   const select = $('#control-dsv-filter');
   statuses.forEach((status) => { if (![...select.options].some((option) => option.value === status)) select.add(new Option(status, status)); });
   if (![...select.options].some((option) => option.value === 'Archiviate')) select.add(new Option('Archiviate', 'Archiviate'));
+  const primaryStatuses = ['Prenotata', 'In transito', 'Centro di distribuzione', 'In consegna', 'Consegnata'];
+  const attentionStatuses = statuses.filter((status) => ['attention', 'incomplete'].includes(dsvFilterKind(status)));
+  const secondaryStatuses = statuses.filter((status) => !primaryStatuses.includes(status) && !attentionStatuses.includes(status));
+  const attentionCount = attentionTotal ?? attentionStatuses.reduce((sum, status) => sum + Number(counts[status] || 0), 0);
+  const secondaryCount = secondaryStatuses.reduce((sum, status) => sum + Number(counts[status] || 0), 0);
+  const secondaryActive = secondaryStatuses.includes(activeStatus);
+  const primaryButtons = primaryStatuses.filter((status) => counts[status] > 0).map((status) => `<button type="button" class="control-quick-filter ${dsvFilterKind(status)} ${activeStatus === status && !exceptionActive ? 'active' : ''}" data-dsv-status="${escapeHtml(status)}"><span>${escapeHtml(status)}</span><strong>${counts[status]}</strong></button>`).join('');
+  const attentionButton = attentionCount
+    ? `<button type="button" class="control-quick-filter attention ${exceptionActive ? 'active' : ''}" data-control-filter="attention"><span>Richiedono attenzione</span><strong>${attentionCount}</strong></button>`
+    : '';
+  const secondaryMenu = secondaryCount
+    ? `<select id="control-other-status" class="control-other-select${secondaryActive ? ' active' : ''}" aria-label="Filtra per altri stati DSV"><option value="">Altri stati · ${secondaryCount}</option>${secondaryStatuses.map((status) => `<option value="${escapeHtml(status)}"${activeStatus === status ? ' selected' : ''}>${escapeHtml(status)} · ${counts[status]}</option>`).join('')}</select>`
+    : '';
   const archivedButton = `<button type="button" class="control-quick-filter archived ${activeStatus === 'Archiviate' ? 'active' : ''}" data-dsv-status="Archiviate" title="Visualizza solo spedizioni archiviate"><span>Archiviate</span><strong>${archivedCount}</strong></button>`;
-  bar.innerHTML = `<span class="filter-bar-label">Stati DSV</span><button type="button" class="control-quick-filter ${activeStatus ? '' : 'active'}" data-dsv-status=""><span>Tutte</span><strong>${total}</strong></button>${statuses.map((status) => `<button type="button" class="control-quick-filter ${dsvFilterKind(status)} ${activeStatus === status ? 'active' : ''}" data-dsv-status="${escapeHtml(status)}"><span>${escapeHtml(status)}</span><strong>${counts[status]}</strong></button>`).join('')}${archivedButton}`;
+  bar.innerHTML = `<span class="filter-bar-label">Stati DSV</span><button type="button" class="control-quick-filter ${!activeStatus && !exceptionActive && controlMetricFilter === 'all' ? 'active' : ''}" data-control-filter="all"><span>Tutte</span><strong>${total}</strong></button>${primaryButtons}${attentionButton}${secondaryMenu}<span class="control-filter-spacer"></span>${archivedButton}`;
 }
 
 function caseBadge(status) {
@@ -442,12 +461,102 @@ function caseBadge(status) {
   return `<span class="case-status ${kind}">${escapeHtml(status)}</span>`;
 }
 
+function renderControlMappingAlert(counts = {}) {
+  const alert = $('#control-mapping-alert');
+  if (!alert) return;
+  if ($('#control-dsv-filter')?.value === 'Archiviate') {
+    alert.hidden = true;
+    alert.innerHTML = '';
+    return;
+  }
+  const mappableStatuses = ['Prenotata', 'In transito', 'Centro di distribuzione', 'In consegna', 'Consegnata'];
+  const missing = mappableStatuses
+    .filter((status) => Number(counts[status] || 0) > 0 && !dsvStateMappings[status])
+    .map((status) => ({ status, count: Number(counts[status]) }));
+  if (!missing.length) {
+    alert.hidden = true;
+    alert.innerHTML = '';
+    return;
+  }
+  const affected = missing.reduce((sum, item) => sum + item.count, 0);
+  const summary = missing.length === 1
+    ? `Mappatura mancante per “${missing[0].status}”: ${affected} spedizion${affected === 1 ? 'e' : 'i'} interessat${affected === 1 ? 'a' : 'e'}.`
+    : `${missing.length} stati DSV senza mappatura interessano ${affected} spedizioni.`;
+  alert.innerHTML = `<span><strong>Mappatura stati incompleta.</strong> ${escapeHtml(summary)}</span><button id="configure-control-mappings" type="button" class="secondary">Configura mappature</button>`;
+  alert.hidden = false;
+}
+
+function updateControlFilterUi() {
+  const hasFilters = Boolean(
+    ($('#control-search-query')?.value || '').trim()
+    || $('#control-dsv-filter')?.value
+    || controlPrestaStateFilter
+    || $('#control-date-filter')?.value
+    || $('#control-exceptions')?.checked
+    || controlMetricFilter !== 'all'
+  );
+  const clearButton = $('#control-clear-filters');
+  if (clearButton) clearButton.hidden = !hasFilters;
+}
+
+function prestaStateFilterLabel(value) {
+  if (value === PRESTA_UNLINKED_FILTER) return 'Ordine non collegato';
+  if (value === PRESTA_UNAVAILABLE_FILTER) return 'Stato non disponibile';
+  return value || 'Stato PrestaShop';
+}
+
+function closeControlPrestaFilter() {
+  const menu = $('#control-presta-filter-menu');
+  const trigger = $('#control-presta-filter-trigger');
+  if (menu) menu.hidden = true;
+  if (trigger) trigger.setAttribute('aria-expanded', 'false');
+}
+
+function positionControlPrestaFilter() {
+  const menu = $('#control-presta-filter-menu');
+  const trigger = $('#control-presta-filter-trigger');
+  if (!menu || !trigger || menu.hidden) return;
+  const rect = trigger.getBoundingClientRect();
+  const width = Math.min(292, window.innerWidth - 24);
+  menu.style.width = `${width}px`;
+  menu.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - width - 12))}px`;
+  menu.style.top = `${Math.min(rect.bottom + 6, window.innerHeight - menu.offsetHeight - 12)}px`;
+}
+
+function renderControlPrestaFilter(data) {
+  const menu = $('#control-presta-filter-menu');
+  const trigger = $('#control-presta-filter-trigger');
+  const label = $('#control-presta-filter-label');
+  if (!menu || !trigger || !label) return;
+  const counts = data.prestaStateCounts || {};
+  const total = Number(data.prestaStateFacetTotal ?? Object.values(counts).reduce((sum, count) => sum + Number(count || 0), 0));
+  const entries = Object.entries(counts)
+    .filter(([, count]) => Number(count) > 0)
+    .map(([state, count]) => ({
+      state,
+      value: state === 'Ordine non collegato' ? PRESTA_UNLINKED_FILTER : state === 'Stato non disponibile' ? PRESTA_UNAVAILABLE_FILTER : state,
+      count: Number(count),
+    }))
+    .sort((left, right) => {
+      const leftSpecial = left.value.startsWith('__') ? 1 : 0;
+      const rightSpecial = right.value.startsWith('__') ? 1 : 0;
+      return leftSpecial - rightSpecial || right.count - left.count || left.state.localeCompare(right.state, 'it');
+    });
+  const activeLabel = prestaStateFilterLabel(controlPrestaStateFilter);
+  label.textContent = controlPrestaStateFilter ? activeLabel : 'Stato PrestaShop';
+  trigger.classList.toggle('active', Boolean(controlPrestaStateFilter));
+  trigger.title = controlPrestaStateFilter ? `Filtro attivo: ${activeLabel}` : 'Filtra per stato PrestaShop';
+  menu.innerHTML = `<div class="control-column-filter-heading"><strong>Stato PrestaShop</strong><span>${total} spedizioni</span></div><div class="control-column-filter-options"><button type="button" class="control-column-filter-option${controlPrestaStateFilter ? '' : ' active'}" data-presta-state-filter="" aria-pressed="${!controlPrestaStateFilter}"><span>Tutti gli stati</span><strong>${total}</strong></button>${entries.map(({ state, value, count }) => `<button type="button" class="control-column-filter-option${controlPrestaStateFilter === value ? ' active' : ''}" data-presta-state-filter="${escapeHtml(value)}" aria-pressed="${controlPrestaStateFilter === value}"><span>${escapeHtml(state)}</span><strong>${count}</strong></button>`).join('')}</div>`;
+  positionControlPrestaFilter();
+}
+
 function renderControlCenter(data) {
   controlOverview = data;
   dsvStateMappings = data.stateMappings || dsvStateMappings;
   controlRecords = data.records || [];
+  const batchMode = Boolean(activeBatchFilter?.trackings);
   let batchBanner = $('#control-batch-banner');
-  if (activeBatchFilter && activeBatchFilter.trackings) {
+  if (batchMode) {
     controlRecords = controlRecords.filter((row) => activeBatchFilter.trackings.has(row.trackingNumber));
     if (!batchBanner) {
       batchBanner = document.createElement('div');
@@ -468,30 +577,45 @@ function renderControlCenter(data) {
   } else if (batchBanner) {
     batchBanner.remove();
   }
-  const totalPages = Math.max(1, Math.ceil(controlRecords.length / CONTROL_PAGE_SIZE));
-  controlPage = Math.min(controlPage, totalPages);
-  const pageRecords = controlRecords.slice((controlPage - 1) * CONTROL_PAGE_SIZE, controlPage * CONTROL_PAGE_SIZE);
+  const filteredTotal = batchMode ? controlRecords.length : Number(data.filteredTotal ?? controlRecords.length);
+  const totalPages = batchMode ? Math.max(1, Math.ceil(filteredTotal / CONTROL_PAGE_SIZE)) : Number(data.totalPages || 1);
+  controlPage = batchMode ? Math.min(controlPage, totalPages) : Number(data.page || controlPage);
+  const pageRecords = batchMode ? controlRecords.slice((controlPage - 1) * CONTROL_PAGE_SIZE, controlPage * CONTROL_PAGE_SIZE) : controlRecords;
   const counts = data.counts || {};
   const moving = (counts['Centro di distribuzione'] || 0) + (counts['In transito'] || 0) + (counts['In consegna'] || 0);
+  const attention = (counts['Da gestire'] || 0) + (counts['Verifica incompleta'] || 0);
+  const activeDsvFilter = $('#control-dsv-filter')?.value || '';
   $('#control-metrics').innerHTML = [
-    ['Monitorate', data.total || 0, 'neutral'], ['In movimento', moving, 'transit'],
-    ['Consegnate', counts.Consegnata || 0, 'delivered'], ['Richiedono attenzione', counts['Da gestire'] || 0, 'attention'],
-  ].map(([label, value, kind]) => `<div class="control-metric ${kind}"><strong>${value}</strong><span>${label}</span></div>`).join('');
-  renderDsvStatusFilters(data.dsvCounts || {}, data.archivedCount || 0);
+    ['Monitorate', data.total || 0, 'neutral', 'all'], ['In movimento', moving, 'transit', 'moving'],
+    ['Consegnate', counts.Consegnata || 0, 'delivered', 'delivered'], ['Da gestire', attention, 'attention', 'attention'],
+  ].map(([label, value, kind, filter]) => {
+    const active = controlMetricFilter === filter && (filter !== 'all' || (!activeDsvFilter && !$('#control-exceptions')?.checked));
+    return `<button type="button" class="control-metric ${kind}${active ? ' active' : ''}" data-metric-filter="${filter}" aria-pressed="${active}"><strong>${value}</strong><span>${label}</span></button>`;
+  }).join('');
+  renderDsvStatusFilters(data.dsvCounts || {}, data.archivedCount || 0, attention);
+  renderControlMappingAlert(data.dsvCounts || {});
+  renderControlPrestaFilter(data);
   const backupBadge = $('#backup-shipments-badge');
   if (backupBadge && data.total !== undefined) {
     backupBadge.textContent = `${data.total} spedizioni pronte`;
   }
   const isArchivedActive = $('#control-dsv-filter')?.value === 'Archiviate';
   const emptyMessage = isArchivedActive ? 'Nessuna spedizione archiviata.' : data.total ? 'Nessuna spedizione corrisponde ai filtri.' : 'Nessuna spedizione ancora archiviata. Verifica un file per popolare il centro.';
-  const visible = new Set(controlRecords.map((row) => row.trackingNumber));
-  controlSelectedTrackingNumbers = new Set([...controlSelectedTrackingNumbers].filter((trackingNumber) => visible.has(trackingNumber)));
+  const visibleTrackings = new Set(pageRecords.map((row) => row.trackingNumber));
+  controlSelectedTrackingNumbers = new Set([...controlSelectedTrackingNumbers].filter((trackingNumber) => visibleTrackings.has(trackingNumber)));
   $('#control-table tbody').innerHTML = pageRecords.length ? pageRecords.map((row) => {
     const archivedTag = row.archived ? '<span class="control-status archived"><span class="status-dot" aria-hidden="true"></span>Archiviata</span>' : '';
-    return `<tr data-tracking="${escapeHtml(row.trackingNumber)}" class="${row.trackingNumber === activeControlTrackingNumber ? 'active' : ''}"><td><input class="control-row-select row-select" data-tracking="${escapeHtml(row.trackingNumber)}" type="checkbox" ${controlSelectedTrackingNumbers.has(row.trackingNumber) ? 'checked' : ''} aria-label="Seleziona spedizione ${escapeHtml(row.trackingNumber)}"></td><td>${copyableValue(row.trackingNumber, 'Numero spedizione', 'tracking-val')}</td><td>${copyableValue(row.orderReference, 'Riferimento ordine', 'order-val')}</td><td><div class="dsv-state-cell">${dsvBadge(row.dsvStatus)}${archivedTag}<small title="Data e ora dichiarate da DSV">${displayDsvEventDate(row)}</small></div></td><td><div class="prestashop-state-cell">${prestaShopBadge(row.currentState)}${prestaShopStateAction(row)}</div></td><td>${displayDateTime(row.dsvCheckedAt || row.lastSeenAt)}</td><td><button class="open-shipment secondary" data-tracking="${escapeHtml(row.trackingNumber)}">Dettaglio <span aria-hidden="true">›</span></button></td></tr>`;
-  }).join('') : `<tr><td colspan="7" class="control-empty">${emptyMessage}</td></tr>`;
+    const checkedAt = row.dsvCheckedAt || row.lastSeenAt;
+    const checkedAge = relativeAge(checkedAt);
+    const prestaState = String(row.currentState || '').trim();
+    const prestaCell = prestaState
+      ? `<button type="button" class="control-presta-state-shortcut" data-presta-state-filter="${escapeHtml(prestaState)}" title="Mostra solo gli ordini in stato ${escapeHtml(prestaState)}" aria-label="Filtra per stato PrestaShop: ${escapeHtml(prestaState)}">${prestaShopBadge(prestaState)}</button>`
+      : prestaShopBadge(row.currentState);
+    return `<tr data-tracking="${escapeHtml(row.trackingNumber)}" class="${row.trackingNumber === activeControlTrackingNumber ? 'active' : ''}"><td><input class="control-row-select row-select" data-tracking="${escapeHtml(row.trackingNumber)}" type="checkbox" ${controlSelectedTrackingNumbers.has(row.trackingNumber) ? 'checked' : ''} aria-label="Seleziona spedizione ${escapeHtml(row.trackingNumber)}"></td><td>${copyableValue(row.trackingNumber, 'Numero spedizione', 'tracking-val')}</td><td>${copyableValue(row.orderReference, 'Riferimento ordine', 'order-val')}</td><td><div class="dsv-state-cell">${dsvBadge(row.dsvStatus)}${archivedTag}<small title="Data e ora dichiarate da DSV">${displayDsvEventDate(row)}</small></div></td><td>${prestaCell}</td><td><div class="control-alignment-cell">${prestaShopStateAction(row)}</div></td><td><div class="control-check-cell"><span>${displayDateTime(checkedAt)}</span>${checkedAge ? `<small>${escapeHtml(checkedAge)}</small>` : ''}</div></td><td><button class="open-shipment secondary" data-tracking="${escapeHtml(row.trackingNumber)}" aria-label="Apri dettaglio della spedizione ${escapeHtml(row.trackingNumber)}"><span class="sr-only">Dettaglio</span><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5"/></svg></button></td></tr>`;
+  }).join('') : `<tr><td colspan="8" class="control-empty">${emptyMessage}</td></tr>`;
   updateControlSelectionUi(pageRecords);
-  renderControlPager(controlRecords.length, totalPages);
+  renderControlPager(filteredTotal, totalPages);
+  updateControlFilterUi();
 }
 
 function renderControlPager(total, totalPages) {
@@ -911,16 +1035,21 @@ function exportVerificationReportCsv() {
 
 async function refreshControlCenter() {
   const params = new URLSearchParams();
-  const query = ($('#global-tracking-query')?.value || '').trim();
+  const query = ($('#control-search-query')?.value || $('#global-tracking-query')?.value || '').trim();
   if (query) params.set('query', query);
   if ($('#control-dsv-filter')?.value) params.set('dsvStatus', $('#control-dsv-filter').value);
+  if (controlPrestaStateFilter) params.set('prestaState', controlPrestaStateFilter);
   if ($('#control-date-filter')?.value) params.set('checkedAfter', $('#control-date-filter').value);
   if ($('#control-exceptions').checked) params.set('exceptions', '1');
+  if (controlMetricFilter === 'moving') params.set('status', 'In movimento');
+  if (controlMetricFilter === 'delivered') params.set('status', 'Consegnata');
+  params.set('page', activeBatchFilter ? '1' : String(controlPage));
+  params.set('pageSize', activeBatchFilter ? '500' : String(CONTROL_PAGE_SIZE));
   try {
     renderControlCenter(await request(`/api/control-center?${params}`));
     $('#control-last-sync').textContent = `Elenco aggiornato alle ${new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}`;
   }
-  catch (e) { $('#control-table tbody').innerHTML = `<tr><td colspan="7" class="control-empty">${escapeHtml(e.message)}</td></tr>`; }
+  catch (e) { $('#control-table tbody').innerHTML = `<tr><td colspan="8" class="control-empty">${escapeHtml(e.message)}</td></tr>`; }
 }
 
 function setupBackupRestore() {
@@ -1587,6 +1716,12 @@ function setupWorkspace() {
       </button>
     </div>
     <div id="history-batches-tab" class="history-tab-pane active">
+      <div class="history-batch-toolbar">
+        <label class="history-batch-search"><span class="sr-only">Cerca nello storico importazioni</span><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg><input id="batch-search-input" type="search" placeholder="Cerca file, lotto o tracking…" autocomplete="off"></label>
+        <label class="history-batch-origin"><span>Origine</span><select id="batch-origin-filter"><option value="">Tutte</option><option value="excel">File Excel</option><option value="manual">Inserimento manuale</option></select></label>
+        <span id="batch-results-summary" class="batch-results-summary" aria-live="polite"></span>
+      </div>
+      <p id="history-batches-message" class="message history-batches-message" aria-live="polite"></p>
       <div class="batches-container" id="batches-list">
         <div class="control-empty">Caricamento storico lotti…</div>
       </div>
@@ -1633,6 +1768,15 @@ function setupWorkspace() {
         </table>
       </div>
     </div>
+    <dialog id="delete-batch-dialog" class="delete-batch-dialog" aria-labelledby="delete-batch-title">
+      <form id="delete-batch-form" class="delete-batch-form">
+        <div class="delete-batch-heading"><div><h3 id="delete-batch-title">Elimina lotto dallo storico?</h3><p>Questa operazione elimina soltanto la registrazione del lotto.</p></div><button id="close-delete-batch" type="button" class="detail-close" aria-label="Chiudi"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg></button></div>
+        <div class="delete-batch-summary"><strong id="delete-batch-name">—</strong><span id="delete-batch-meta"></span></div>
+        <p class="delete-batch-assurance">Le spedizioni nel Tracking Center, l’audit operativo e gli ordini PrestaShop non verranno modificati.</p>
+        <p id="delete-batch-message" class="message" aria-live="polite"></p>
+        <div class="delete-batch-actions"><button id="cancel-delete-batch" type="button" class="secondary">Annulla</button><button id="confirm-delete-batch" type="submit" class="danger">Elimina dallo storico</button></div>
+      </form>
+    </dialog>
   `;
   main.append(history);
   const icons = {
@@ -1648,7 +1792,12 @@ function setupWorkspace() {
   $('#mobile-navigation-toggle').addEventListener('click', () => { const open = document.body.classList.toggle('navigation-open'); $('#mobile-navigation-toggle').setAttribute('aria-expanded', String(open)); });
   $('#navigation-backdrop').addEventListener('click', () => { document.body.classList.remove('navigation-open'); $('#mobile-navigation-toggle').setAttribute('aria-expanded', 'false'); });
   $('#global-tracking-form').addEventListener('submit', (event) => { event.preventDefault(); controlPage = 1; location.hash = 'control'; refreshControlCenter(); });
-  $('#global-tracking-query')?.addEventListener('input', () => { controlPage = 1; clearTimeout(window.controlSearchTimer); window.controlSearchTimer = setTimeout(refreshControlCenter, 300); });
+  $('#global-tracking-query')?.addEventListener('input', () => {
+    controlPage = 1;
+    if ($('#control-search-query')) $('#control-search-query').value = $('#global-tracking-query').value;
+    clearTimeout(window.controlSearchTimer);
+    window.controlSearchTimer = setTimeout(refreshControlCenter, 300);
+  });
   $('#refresh-history').addEventListener('click', renderImportHistory);
   $('#state-mapping-form').addEventListener('submit', saveStateMappings);
   setupBackupRestore();
@@ -1681,15 +1830,29 @@ function setupControlWorkspace() {
   const headerCells = [...card.querySelectorAll('#control-table thead th')];
   headerCells.find((cell) => cell.textContent.trim() === 'Gestione')?.remove();
   headerCells.find((cell) => cell.textContent.trim() === 'Stato operativo')?.remove();
+  const trackingHeader = headerCells.find((cell) => cell.textContent.trim() === 'Tracking');
+  if (trackingHeader) trackingHeader.textContent = 'Tracking';
   const dsvHeader = [...card.querySelectorAll('#control-table thead th')].find((cell) => cell.textContent.trim() === 'Stato DSV');
   if (![...card.querySelectorAll('#control-table thead th')].some((cell) => cell.textContent.trim() === 'Stato PrestaShop')) dsvHeader?.insertAdjacentHTML('afterend', '<th>Stato PrestaShop</th>');
+  const prestaHeader = [...card.querySelectorAll('#control-table thead th')].find((cell) => cell.textContent.trim() === 'Stato PrestaShop');
+  if (![...card.querySelectorAll('#control-table thead th')].some((cell) => cell.textContent.trim() === 'Allineamento')) prestaHeader?.insertAdjacentHTML('afterend', '<th>Allineamento</th>');
+  if (prestaHeader) {
+    prestaHeader.classList.add('control-filterable-header');
+    prestaHeader.innerHTML = '<button id="control-presta-filter-trigger" type="button" class="control-column-filter-trigger" aria-haspopup="menu" aria-expanded="false"><span id="control-presta-filter-label">Stato PrestaShop</span><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></button>';
+  }
+  if (!$('#control-presta-filter-menu')) document.body.insertAdjacentHTML('beforeend', '<div id="control-presta-filter-menu" class="control-column-filter-menu" role="menu" aria-label="Filtra per stato PrestaShop" hidden></div>');
+  const initialEmptyCell = card.querySelector('#control-table tbody .control-empty');
+  if (initialEmptyCell) initialEmptyCell.colSpan = card.querySelectorAll('#control-table thead th').length;
   card.querySelector('.control-heading > div').insertAdjacentHTML('beforeend', '<div class="control-meta"><span id="control-service-status" class="control-service-status" data-state="off">DSV tracking non attivo</span><span id="control-last-sync" class="control-last-sync" aria-live="polite"></span></div>');
   card.querySelector('.control-filters').insertAdjacentHTML('beforebegin', '<nav id="control-quick-filters" class="control-quick-filters" aria-label="Filtra per stato DSV"><span class="filter-bar-label">Stati DSV</span><button type="button" class="control-quick-filter active" data-dsv-status=""><span>Tutte</span><strong>0</strong></button></nav>');
-  card.querySelector('.control-filters').insertAdjacentHTML('beforeend', '<label class="control-dsv-filter-label" hidden>Stato DSV<select id="control-dsv-filter"><option value="">Tutti gli esiti DSV</option><option>Prenotata</option><option>In transito</option><option>Centro di distribuzione</option><option>In consegna</option><option>Consegnata</option><option>Non verificato</option><option>Da verificare manualmente</option><option>Errore beta</option><option>Spedizione non trovata</option><option>Intervento manuale richiesto</option><option>Eccezione DSV</option><option value="Archiviate">Archiviate</option></select></label><div class="control-filters-right"><label class="control-date-label">Controllato dal<input id="control-date-filter" type="date"></label><button id="control-clear-filters" type="button" class="secondary control-clear-filters">Pulisci filtri</button></div>');
+  card.querySelector('.control-filters').insertAdjacentHTML('afterbegin', '<label class="control-search-field"><span class="sr-only">Cerca spedizione o ordine</span><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg><input id="control-search-query" type="search" placeholder="Cerca tracking, riferimento o ID ordine" autocomplete="off"></label>');
+  card.querySelector('.control-filters').insertAdjacentHTML('beforeend', '<label class="control-dsv-filter-label" hidden>Stato DSV<select id="control-dsv-filter"><option value="">Tutti gli esiti DSV</option><option>Prenotata</option><option>In transito</option><option>Centro di distribuzione</option><option>In consegna</option><option>Consegnata</option><option>Non verificato</option><option>Da verificare manualmente</option><option>Errore beta</option><option>Spedizione non trovata</option><option>Intervento manuale richiesto</option><option>Eccezione DSV</option><option value="Archiviate">Archiviate</option></select></label><div class="control-filters-right"><label class="control-date-label"><span>Controllato dal</span><input id="control-date-filter" type="date"></label><button id="control-clear-filters" type="button" class="secondary control-clear-filters" hidden>Pulisci filtri</button></div>');
+  card.querySelector('.control-filters').insertAdjacentHTML('afterend', '<div id="control-mapping-alert" class="control-mapping-alert" hidden></div>');
   card.querySelector('.control-filters').insertAdjacentHTML('afterend', '<div id="control-bulk-bar" class="control-bulk-bar" hidden><strong id="control-bulk-count">0 selezionate</strong><span>Azioni sulla selezione</span><button id="control-bulk-verify" type="button">Verifica DSV</button><button id="control-bulk-sync-prestashop" type="button" class="secondary">Allinea stato PrestaShop</button><button id="control-bulk-export" type="button" class="secondary">Esporta CSV</button><button id="control-bulk-manage" type="button" class="secondary">Segna in lavorazione</button><button id="control-bulk-clear" type="button" class="secondary">Deseleziona</button></div>');
   $('#control-dsv-filter').addEventListener('change', () => { controlPage = 1; refreshControlCenter(); });
   $('#control-date-filter').addEventListener('change', () => { controlPage = 1; refreshControlCenter(); });
-  $('#control-clear-filters').addEventListener('click', () => { if ($('#global-tracking-query')) $('#global-tracking-query').value = ''; if ($('#control-dsv-filter')) $('#control-dsv-filter').value = ''; if ($('#control-date-filter')) $('#control-date-filter').value = ''; if ($('#control-exceptions')) $('#control-exceptions').checked = false; controlPage = 1; refreshControlCenter(); });
+  $('#control-search-query').addEventListener('input', () => { $('#global-tracking-query').value = $('#control-search-query').value; controlPage = 1; clearTimeout(window.controlSearchTimer); window.controlSearchTimer = setTimeout(refreshControlCenter, 300); });
+  $('#control-clear-filters').addEventListener('click', () => { if ($('#global-tracking-query')) $('#global-tracking-query').value = ''; if ($('#control-search-query')) $('#control-search-query').value = ''; if ($('#control-dsv-filter')) $('#control-dsv-filter').value = ''; if ($('#control-date-filter')) $('#control-date-filter').value = ''; if ($('#control-exceptions')) $('#control-exceptions').checked = false; controlMetricFilter = 'all'; controlPrestaStateFilter = ''; closeControlPrestaFilter(); controlPage = 1; refreshControlCenter(); });
   $('#control-bulk-clear').addEventListener('click', () => { controlSelectedTrackingNumbers.clear(); refreshControlCenter(); });
   $('#control-bulk-verify').addEventListener('click', () => $('#verify-control-selected').click());
   $('#control-bulk-sync-prestashop').addEventListener('click', openBulkPrestaShopDialog);
@@ -2777,10 +2940,13 @@ let activeHistorySubtab = 'batches';
 let auditTypeFilter = '';
 let auditSearchQuery = '';
 let auditDateFilter = '';
+let historyBatchSearch = '';
+let historyBatchOrigin = '';
 let activeBatchFilter = null;
 let currentImportFileName = 'File Excel';
 let currentImportOrigin = 'excel';
 let auditSearchDebounceTimer = null;
+let historyBatchSearchTimer = null;
 
 function setupHistorySection() {
   const subnavBtns = document.querySelectorAll('.history-subnav-btn');
@@ -2845,6 +3011,38 @@ function setupHistorySection() {
     }
     window.location.href = `/api/history/audit-log/export?${params.toString()}`;
   });
+
+  $('#batch-search-input')?.addEventListener('input', (event) => {
+    clearTimeout(historyBatchSearchTimer);
+    historyBatchSearchTimer = setTimeout(() => {
+      historyBatchSearch = event.target.value.trim();
+      void loadHistoryBatches();
+    }, 200);
+  });
+  $('#batch-origin-filter')?.addEventListener('change', (event) => {
+    historyBatchOrigin = event.target.value;
+    void loadHistoryBatches();
+  });
+  $('#cancel-delete-batch')?.addEventListener('click', () => $('#delete-batch-dialog')?.close());
+  $('#close-delete-batch')?.addEventListener('click', () => $('#delete-batch-dialog')?.close());
+  $('#delete-batch-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const dialog = $('#delete-batch-dialog');
+    const button = $('#confirm-delete-batch');
+    const batchId = dialog?.dataset.batchId;
+    if (!batchId) return;
+    button.disabled = true;
+    try {
+      const result = await request(`/api/history/batches/${encodeURIComponent(batchId)}`, { method: 'DELETE' });
+      dialog.close();
+      tell('#history-batches-message', result.message, 'success');
+      await loadHistoryBatches();
+    } catch (error) {
+      tell('#delete-batch-message', error.message, 'error');
+    } finally {
+      button.disabled = false;
+    }
+  });
 }
 
 async function renderImportHistory() {
@@ -2874,20 +3072,37 @@ async function loadHistoryBatches() {
     const batches = await request('/api/history/batches');
     const badge = $('#batches-count-badge');
     if (badge) badge.textContent = batches.length;
+    const needle = historyBatchSearch.toLocaleLowerCase('it-IT');
+    const visibleBatches = batches.filter((batch) => {
+      const matchesOrigin = !historyBatchOrigin || batch.origin === historyBatchOrigin;
+      const matchesSearch = !needle || [batch.filename, batch.id, ...(batch.trackingNumbers || [])]
+        .some((value) => String(value || '').toLocaleLowerCase('it-IT').includes(needle));
+      return matchesOrigin && matchesSearch;
+    });
+    const processedRows = visibleBatches.reduce((sum, batch) => sum + Number(batch.totalRows || batch.trackingNumbers?.length || 0), 0);
+    const resultsSummary = $('#batch-results-summary');
+    if (resultsSummary) resultsSummary.textContent = `${visibleBatches.length} di ${batches.length} lotti · ${processedRows} colli`;
     if (!batches.length) {
       container.innerHTML = '<div class="control-empty">Nessun lotto di importazione registrato.</div>';
       return;
     }
-    container.innerHTML = batches.map((batch) => {
+    if (!visibleBatches.length) {
+      container.innerHTML = '<div class="control-empty">Nessun lotto corrisponde ai filtri impostati.</div>';
+      return;
+    }
+    container.innerHTML = visibleBatches.map((batch) => {
       const originClass = batch.origin === 'manual' ? 'manual' : 'excel';
-      const originLabel = batch.origin === 'manual' ? '✍️ Manuale' : '📥 File Excel';
+      const originLabel = batch.origin === 'manual' ? 'Manuale' : 'File Excel';
+      const originIcon = batch.origin === 'manual'
+        ? '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M11 2a2 2 0 0 1 2.8 2.8L4.8 13.8l-3.3.7.7-3.3L11 2zM10 3l3 3"/></svg>'
+        : '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.5 2H4a1.5 1.5 0 0 0-1.5 1.5v9A1.5 1.5 0 0 0 4 14h8a1.5 1.5 0 0 0 1.5-1.5V6.5L9.5 2zM9.5 2v4.5H14M8 8v4m-2-2h4"/></svg>';
       const trackings = Array.isArray(batch.trackingNumbers) ? batch.trackingNumbers : [];
       return `
         <article class="batch-card" data-batch-id="${escapeHtml(batch.id)}">
           <header class="batch-card-header">
             <div class="batch-title-group">
               <div class="batch-title-row">
-                <span class="batch-origin-badge ${originClass}">${originLabel}</span>
+                <span class="batch-origin-badge ${originClass}">${originIcon}${originLabel}</span>
                 <span class="batch-filename">${escapeHtml(batch.filename)}</span>
               </div>
               <time class="batch-timestamp">${displayDateTime(batch.at)}</time>
@@ -2904,7 +3119,7 @@ async function loadHistoryBatches() {
           <div class="batch-card-actions">
             <button type="button" class="secondary batch-filter-control-btn" data-batch-id="${escapeHtml(batch.id)}">
               <svg viewBox="0 0 20 20" width="14" height="14" fill="currentColor"><path fill-rule="evenodd" d="M8 4a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM2 8a6 6 0 1 1 10.89 3.476l4.817 4.817a1 1 0 0 1-1.414 1.414l-4.816-4.816A6 6 0 0 1 2 8z" clip-rule="evenodd"/></svg>
-              Vedi nel Centro di Controllo
+              Apri nel centro
             </button>
             <a class="secondary button-link" href="/api/history/batches/${encodeURIComponent(batch.id)}/export" download="lotto-${escapeHtml(batch.id)}.csv">
               <svg viewBox="0 0 20 20" width="14" height="14" fill="currentColor"><path fill-rule="evenodd" d="M3 17a1 1 0 0 1 1-1h12a1 1 0 1 1 0 2H4a1 1 0 0 1-1-1zm3.293-7.707a1 1 0 0 1 1.414 0L9 10.586V3a1 1 0 1 1 2 0v7.586l1.293-1.293a1 1 0 1 1 1.414 1.414l-3 3a1 1 0 0 1-1.414 0l-3-3a1 1 0 0 1 0-1.414z" clip-rule="evenodd"/></svg>
@@ -2912,6 +3127,9 @@ async function loadHistoryBatches() {
             </a>
             <button type="button" class="secondary batch-toggle-chips-btn" data-batch-id="${escapeHtml(batch.id)}" data-count="${trackings.length}">
               Colli (${trackings.length}) ▾
+            </button>
+            <button type="button" class="batch-delete-btn" data-batch-id="${escapeHtml(batch.id)}" aria-label="Elimina ${escapeHtml(batch.filename)} dallo storico" title="Elimina dallo storico">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4h11M6 4V2.5h4V4m-6 0 .6 10h6.8L12 4M6.5 6.5v5M9.5 6.5v5"/></svg>
             </button>
           </div>
           <div class="batch-trackings-drawer" id="drawer-${escapeHtml(batch.id)}" hidden>
@@ -2954,6 +3172,19 @@ async function loadHistoryBatches() {
       btn.addEventListener('click', () => {
         const trk = btn.dataset.tracking;
         if (trk) void openShipmentDetail(trk);
+      });
+    });
+
+    container.querySelectorAll('.batch-delete-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const batch = batches.find((item) => item.id === btn.dataset.batchId);
+        const dialog = $('#delete-batch-dialog');
+        if (!batch || !dialog) return;
+        dialog.dataset.batchId = batch.id;
+        $('#delete-batch-name').textContent = batch.filename || 'Lotto di importazione';
+        $('#delete-batch-meta').textContent = `${displayDateTime(batch.at)} · ${batch.trackingNumbers?.length || 0} colli`;
+        tell('#delete-batch-message', '');
+        dialog.showModal();
       });
     });
   } catch (err) {
@@ -3562,13 +3793,37 @@ $('#verify-dsv-beta').addEventListener('click', async () => {
 });
 
 $('#refresh-control-center').addEventListener('click', refreshControlCenter);
-$('#control-exceptions').addEventListener('change', () => { controlPage = 1; refreshControlCenter(); });
+$('#control-exceptions').addEventListener('change', () => { controlMetricFilter = $('#control-exceptions').checked ? 'attention' : 'all'; controlPage = 1; refreshControlCenter(); });
 $('.control-center-card').addEventListener('click', (event) => {
-  const quickFilter = event.target.closest('.control-quick-filter');
+  const metric = event.target.closest('.control-metric[data-metric-filter]');
+  if (metric) {
+    controlMetricFilter = metric.dataset.metricFilter || 'all';
+    $('#control-dsv-filter').value = '';
+    $('#control-exceptions').checked = controlMetricFilter === 'attention';
+    controlPage = 1;
+    refreshControlCenter();
+    return;
+  }
+  const quickFilter = event.target.closest('[data-dsv-status], [data-control-filter]');
   if (!quickFilter) return;
-  $('#control-dsv-filter').value = quickFilter.dataset.dsvStatus || '';
+  const controlFilter = quickFilter.dataset.controlFilter || '';
+  if (controlFilter === 'attention') {
+    $('#control-dsv-filter').value = '';
+    $('#control-exceptions').checked = true;
+    controlMetricFilter = 'attention';
+  } else {
+    $('#control-dsv-filter').value = quickFilter.dataset.dsvStatus || '';
+    $('#control-exceptions').checked = false;
+    controlMetricFilter = 'all';
+  }
+  controlPage = 1;
+  refreshControlCenter();
+});
+$('.control-center-card').addEventListener('change', (event) => {
+  if (!event.target.matches('#control-other-status') || !event.target.value) return;
+  $('#control-dsv-filter').value = event.target.value;
   $('#control-exceptions').checked = false;
-  document.querySelectorAll('.control-quick-filter').forEach((button) => button.classList.toggle('active', button === quickFilter));
+  controlMetricFilter = 'all';
   controlPage = 1;
   refreshControlCenter();
 });
@@ -3600,9 +3855,23 @@ $('.control-center-card').addEventListener('click', (event) => {
   const button = event.target.closest('.control-page');
   if (!button || button.disabled) return;
   controlPage = Number(button.dataset.page);
-  renderControlCenter(controlOverview);
+  if (activeBatchFilter) renderControlCenter(controlOverview);
+  else refreshControlCenter();
 });
 $('#control-table tbody').addEventListener('click', (event) => {
+  const stateFilterButton = event.target.closest('.control-presta-state-shortcut');
+  if (stateFilterButton) {
+    controlPrestaStateFilter = stateFilterButton.dataset.prestaStateFilter || '';
+    controlPage = 1;
+    closeControlPrestaFilter();
+    refreshControlCenter();
+    return;
+  }
+  const linkButton = event.target.closest('.link-prestashop-order');
+  if (linkButton) {
+    const shipment = controlRecords.find((row) => row.trackingNumber === linkButton.dataset.tracking);
+    if (shipment) return openPrestaShopLinkDialog(shipment);
+  }
   const updateButton = event.target.closest('.update-prestashop-state');
   if (updateButton && !updateButton.disabled) return openPrestaShopStateDialog(updateButton.dataset.tracking);
   const button = event.target.closest('.open-shipment');
@@ -3610,6 +3879,42 @@ $('#control-table tbody').addEventListener('click', (event) => {
   if (event.target.closest('input, button')) return;
   const row = event.target.closest('tr[data-tracking]');
   if (row) openShipmentDetail(row.dataset.tracking);
+});
+
+document.addEventListener('click', (event) => {
+  const trigger = event.target.closest('#control-presta-filter-trigger');
+  const menu = $('#control-presta-filter-menu');
+  if (trigger && menu) {
+    const willOpen = menu.hidden;
+    menu.hidden = !willOpen;
+    trigger.setAttribute('aria-expanded', String(willOpen));
+    if (willOpen) requestAnimationFrame(positionControlPrestaFilter);
+    return;
+  }
+  const option = event.target.closest('#control-presta-filter-menu [data-presta-state-filter]');
+  if (option) {
+    controlPrestaStateFilter = option.dataset.prestaStateFilter || '';
+    controlPage = 1;
+    closeControlPrestaFilter();
+    refreshControlCenter();
+    return;
+  }
+  if (menu && !menu.hidden && !event.target.closest('#control-presta-filter-menu')) closeControlPrestaFilter();
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || $('#control-presta-filter-menu')?.hidden) return;
+  closeControlPrestaFilter();
+  $('#control-presta-filter-trigger')?.focus();
+});
+
+window.addEventListener('resize', closeControlPrestaFilter);
+window.addEventListener('scroll', closeControlPrestaFilter, true);
+
+$('.control-center-card').addEventListener('click', (event) => {
+  if (!event.target.closest('#configure-control-mappings')) return;
+  location.hash = 'settings';
+  setTimeout(() => $('#state-mapping-view')?.scrollIntoView({ block: 'start', behavior: 'smooth' }), 120);
 });
 
 document.addEventListener('click', async (event) => {
