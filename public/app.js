@@ -14,6 +14,7 @@ let controlOverview = { records: [], total: 0, counts: {} };
 let activeControlTrackingNumber = '';
 let controlDetailTrigger = null;
 let controlDetailRequestToken = 0;
+let shipmentDetailDirty = false;
 let prestaShopStateCatalog = null;
 let prestaShopStateTracking = '';
 let dsvStateMappings = {};
@@ -24,7 +25,48 @@ let reportSearchQuery = '';
 async function request(url, options) { const r = await fetch(url, options); const data = await r.json(); if (!r.ok) throw new Error(data.error); return data; }
 async function initialConfig() { const config = await request('/api/config'); $('#base-url').value = config.baseUrl; }
 function displayDate(value) { return value ? escapeHtml(value.replace(/^([0-9]{4})-([0-9]{2})-([0-9]{2})/, '$3/$2/$1')) : '—'; }
-function displayDateTime(value) { return value ? escapeHtml(new Date(value).toLocaleString('it-IT', { dateStyle: 'short', timeStyle: 'short' })) : '—'; }
+function parseFlexibleDate(value) {
+  if (!value) return null;
+  const text = String(value).trim();
+  const italian = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[,\s]+(\d{1,2}):(\d{2}))?/);
+  if (italian) {
+    const parsed = new Date(Number(italian[3]), Number(italian[2]) - 1, Number(italian[1]), Number(italian[4] || 0), Number(italian[5] || 0));
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  const parsed = new Date(text);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+function displayDateTime(value) {
+  if (!value) return '—';
+  const parsed = parseFlexibleDate(value);
+  return parsed ? escapeHtml(parsed.toLocaleString('it-IT', { dateStyle: 'short', timeStyle: 'short' })) : escapeHtml(value);
+}
+function dateTimeAttribute(value) {
+  const parsed = parseFlexibleDate(value);
+  return parsed ? ` datetime="${parsed.toISOString()}"` : '';
+}
+function relativeAge(value) {
+  const parsed = parseFlexibleDate(value);
+  if (!parsed) return '';
+  const minutes = Math.max(0, Math.floor((Date.now() - parsed.getTime()) / 60000));
+  if (minutes < 2) return 'ora';
+  if (minutes < 60) return `${minutes} min fa`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} ${hours === 1 ? 'ora' : 'ore'} fa`;
+  const days = Math.floor(hours / 24);
+  return `${days} ${days === 1 ? 'giorno' : 'giorni'} fa`;
+}
+function elapsedLabel(newerValue, olderValue) {
+  const newer = parseFlexibleDate(newerValue);
+  const older = parseFlexibleDate(olderValue);
+  if (!newer || !older || newer <= older) return '';
+  const minutes = Math.floor((newer - older) / 60000);
+  if (minutes < 60) return `${minutes} min dopo`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} ${hours === 1 ? 'ora' : 'ore'} dopo`;
+  const days = Math.floor(hours / 24);
+  return `${days} ${days === 1 ? 'giorno' : 'giorni'} dopo`;
+}
 function displayDsvEventDate(row) {
   const value = String(row?.dsvStatusAt || '');
   const match = value.match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/);
@@ -351,7 +393,15 @@ function renderShipmentDsvTimeline(timeline, trackingUrl) {
 
   const summaryCount = timeline.filter((event) => event.currentSummary).length;
   const countLabel = `${timeline.length} ${timeline.length === 1 ? 'evento' : 'eventi'}${summaryCount ? ' · stato corrente incluso' : ''}`;
-  return `<section class="dsv-history"><div class="detail-section-heading"><h4>Storico DSV</h4><span>${countLabel}</span></div><ol class="dsv-timeline">${timeline.slice().reverse().map((event) => `<li${event.currentSummary ? ' class="current-summary"' : ''}><span class="event-marker" aria-hidden="true"></span><div><div class="dsv-event-heading"><strong>${escapeHtml(event.event || 'Evento DSV')}${event.currentSummary ? '<span class="dsv-current-event-tag">Stato corrente</span>' : ''}</strong><time>${escapeHtml(event.date || '—')}</time></div><span>${escapeHtml([event.country, event.location].filter(Boolean).join(' · ') || (event.currentSummary ? 'Riepilogo DSV' : 'Località non disponibile'))}</span>${event.reason ? `<small>${escapeHtml(event.reason)}</small>` : ''}</div></li>`).join('')}</ol></section>`;
+  const ordered = timeline.slice().reverse();
+  const rows = ordered.map((event, index) => {
+    const eventText = `${event.event || ''} ${event.reason || ''}`.toLocaleLowerCase('it-IT');
+    const isException = /non consegn|non caricat|eccezione|ritard|rifiut|mancanza|errore|capacità/.test(eventText);
+    const classes = [event.currentSummary ? 'current-summary' : '', isException ? 'exception-event' : ''].filter(Boolean).join(' ');
+    const elapsed = elapsedLabel(event.date, ordered[index + 1]?.date);
+    return `<li${classes ? ` class="${classes}"` : ''}><span class="event-marker" aria-hidden="true"></span><div><div class="dsv-event-heading"><strong>${escapeHtml(event.event || 'Evento DSV')}${event.currentSummary ? '<span class="dsv-current-event-tag">Stato corrente</span>' : ''}</strong><time${dateTimeAttribute(event.date)}>${escapeHtml(event.date || '—')}</time></div><span>${escapeHtml([event.country, event.location].filter(Boolean).join(' · ') || (event.currentSummary ? 'Riepilogo DSV' : 'Località non disponibile'))}${elapsed ? `<span class="dsv-event-elapsed">${escapeHtml(elapsed)}</span>` : ''}</span>${event.reason ? `<small>${escapeHtml(event.reason)}</small>` : ''}</div></li>`;
+  }).join('');
+  return `<section class="dsv-history"><div class="detail-section-heading"><h4>Storico DSV</h4><span>${countLabel}</span></div><ol class="dsv-timeline">${rows}</ol></section>`;
 }
 
 const DSV_STATUS_ORDER = ['Prenotata', 'In transito', 'Centro di distribuzione', 'In consegna', 'Consegnata', 'Non verificato', 'Da verificare manualmente', 'Spedizione non trovata', 'Intervento manuale richiesto', 'Eccezione DSV', 'Errore beta'];
@@ -1574,8 +1624,32 @@ function setupControlWorkspace() {
     const bounds = detail.getBoundingClientRect();
     if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) closeControlDetail();
   });
+  detail.addEventListener('keydown', (event) => {
+    const isEditing = event.target.matches('input, select, textarea, [contenteditable="true"]');
+    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && event.target.closest('#shipment-case-form')) {
+      event.preventDefault();
+      $('#shipment-case-form button:not(:disabled)')?.click();
+      return;
+    }
+    if (isEditing || event.ctrlKey || event.metaKey || event.altKey) return;
+    const key = event.key.toLocaleLowerCase('it-IT');
+    if (key === 'j') {
+      event.preventDefault();
+      $('#shipment-detail-next:not(:disabled)')?.click();
+    } else if (key === 'k') {
+      event.preventDefault();
+      $('#shipment-detail-previous:not(:disabled)')?.click();
+    } else if (key === 'v') {
+      event.preventDefault();
+      $('#verify-single-dsv:not(:disabled)')?.click();
+    } else if (key === 'u') {
+      event.preventDefault();
+      $('#update-detail-prestashop-state:not(:disabled)')?.click();
+    }
+  });
   document.body.insertAdjacentHTML('beforeend', '<dialog id="prestashop-state-dialog" class="prestashop-state-dialog" aria-labelledby="prestashop-state-title"><div id="prestashop-state-form-wrap"><form id="prestashop-state-form"><div class="prestashop-dialog-heading"><div><span>Aggiornamento ordine</span><h3 id="prestashop-state-title">Allinea stato PrestaShop</h3></div><button id="close-prestashop-state" type="button" class="detail-close" aria-label="Chiudi"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg></button></div><div id="prestashop-state-comparison" class="prestashop-state-comparison"></div><label>Nuovo stato PrestaShop<select id="prestashop-target-state" required><option value="">Caricamento stati…</option></select></label><p class="prestashop-dialog-note">Verrà creato un nuovo evento nello storico dell’ordine. L’email al cliente resterà disattivata.</p><p id="prestashop-state-message" class="message" aria-live="polite"></p><div class="prestashop-dialog-actions"><button id="cancel-prestashop-state" type="button" class="secondary">Annulla</button><button id="confirm-prestashop-state" type="submit">Aggiorna PrestaShop</button></div></form></div><div id="prestashop-state-success-wrap" class="prestashop-state-success-card" hidden><div class="prestashop-success-icon-ring"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg></div><div class="prestashop-success-content"><span class="prestashop-success-eyebrow">Operazione completata</span><h3 class="prestashop-success-title">Stato PrestaShop aggiornato!</h3><div id="prestashop-success-badge-slot" class="prestashop-success-badge-slot"></div><p id="prestashop-success-desc" class="prestashop-success-desc"></p></div><div class="prestashop-timer-bar-track"><div id="prestashop-timer-bar-fill" class="prestashop-timer-bar-fill"></div></div><div class="prestashop-dialog-actions prestashop-success-actions"><button id="prestashop-success-close-btn" type="button" class="secondary prestashop-quick-close">Chiudi subito</button></div></div></dialog><dialog id="prestashop-bulk-dialog" class="prestashop-state-dialog prestashop-bulk-dialog" aria-labelledby="prestashop-bulk-title"><div id="prestashop-bulk-form-wrap" class="prestashop-bulk-form-wrap"><div class="prestashop-dialog-heading"><div><span>Aggiornamento massivo ordini</span><h3 id="prestashop-bulk-title">Allinea stati PrestaShop</h3></div><button id="close-prestashop-bulk" type="button" class="detail-close" aria-label="Chiudi"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg></button></div><label class="prestashop-bulk-select-label">Modalità di allineamento stato PrestaShop<select id="prestashop-bulk-state-select" class="prestashop-bulk-state-select"><option value="auto">⚡ Mappatura automatica DSV (consigliata)</option><optgroup id="prestashop-bulk-forced-group" label="Oppure forza uno stato PrestaShop per tutte"></optgroup></select></label><div id="prestashop-bulk-forced-notice" class="prestashop-bulk-forced-notice" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x2="12.01" y1="17" y2="17"/></svg><span><strong>Modalità forzata:</strong> le regole basate sullo stato DSV vengono ignorate. Tutte le spedizioni con ordine verranno impostate sullo stato selezionato.</span></div><div id="prestashop-bulk-preview-content"></div><p class="prestashop-dialog-note">Come per l’aggiornamento singolo, verrà creato un nuovo evento nello storico di ciascun ordine. L’email al cliente resterà disattivata.</p><p id="prestashop-bulk-message" class="message" aria-live="polite"></p><div class="prestashop-dialog-actions"><button id="cancel-prestashop-bulk" type="button" class="secondary">Annulla</button><button id="confirm-prestashop-bulk" type="button">Conferma allineamento</button></div></div><div id="prestashop-bulk-progress-wrap" class="prestashop-bulk-progress-wrap" hidden><svg class="prestashop-bulk-progress-spinner" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"></circle><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"></path></svg><h3 class="prestashop-bulk-progress-title">Allineamento PrestaShop in corso…</h3><div class="prestashop-bulk-progress-bar-wrap"><div class="prestashop-bulk-progress-labels"><span id="prestashop-bulk-progress-text">0 di 0</span><span id="prestashop-bulk-progress-percent">0%</span></div><div class="prestashop-bulk-progress-track"><div id="prestashop-bulk-progress-bar" class="prestashop-bulk-progress-bar"></div></div></div><p id="prestashop-bulk-progress-info" class="prestashop-bulk-progress-info">Preparazione aggiornamenti…</p></div><div id="prestashop-bulk-success-wrap" class="prestashop-state-success-card" hidden><div class="prestashop-success-icon-ring"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg></div><div class="prestashop-success-content"><span class="prestashop-success-eyebrow">Operazione completata</span><h3 class="prestashop-success-title" id="prestashop-bulk-success-title">Allineamento completato!</h3><p id="prestashop-bulk-success-desc" class="prestashop-success-desc"></p><div id="prestashop-bulk-errors-box" class="prestashop-bulk-errors" hidden></div></div><div class="prestashop-timer-bar-track"><div id="prestashop-bulk-timer-bar-fill" class="prestashop-timer-bar-fill"></div></div><div class="prestashop-dialog-actions prestashop-success-actions"><button id="prestashop-bulk-success-close-btn" type="button" class="secondary prestashop-quick-close">Chiudi subito</button></div></div></dialog>');
   
+  $('#prestashop-success-close-btn')?.insertAdjacentHTML('afterend', '<button id="prestashop-success-next-btn" type="button" hidden>Prossima da gestire</button>');
   const prestashopDialog = $('#prestashop-state-dialog');
   const closePrestaShopDialog = () => {
     if (prestashopSuccessTimeout) {
@@ -1701,6 +1775,28 @@ function highlightControlRow(trackingNumber) {
   }
 }
 
+function shipmentDetailNavigation(trackingNumber) {
+  const rows = controlRecords.filter((row) => row.trackingNumber);
+  const index = rows.findIndex((row) => row.trackingNumber === trackingNumber);
+  return {
+    index,
+    total: rows.length,
+    previous: index > 0 ? rows[index - 1]?.trackingNumber : '',
+    next: index >= 0 && index < rows.length - 1 ? rows[index + 1]?.trackingNumber : '',
+  };
+}
+
+function nextAttentionTracking(trackingNumber) {
+  const rows = controlRecords.filter((row) => row.trackingNumber && !row.archived);
+  if (rows.length < 2) return '';
+  const start = Math.max(0, rows.findIndex((row) => row.trackingNumber === trackingNumber));
+  for (let offset = 1; offset < rows.length; offset += 1) {
+    const row = rows[(start + offset) % rows.length];
+    if (row.operationalStatus === 'Da gestire' || (row.orderId && !isPrestaShopStateAligned(row))) return row.trackingNumber;
+  }
+  return '';
+}
+
 async function openPrestaShopStateDialog(trackingNumber) {
   const shipment = controlRecords.find((row) => row.trackingNumber === trackingNumber) || await request(`/api/control-center/${encodeURIComponent(trackingNumber)}`);
   const dialog = $('#prestashop-state-dialog');
@@ -1713,6 +1809,7 @@ async function openPrestaShopStateDialog(trackingNumber) {
   }
   $('#prestashop-state-form-wrap').hidden = false;
   $('#prestashop-state-success-wrap').hidden = true;
+  $('#prestashop-success-next-btn').hidden = true;
   const confirmBtn = $('#confirm-prestashop-state');
   confirmBtn.disabled = false;
   confirmBtn.innerHTML = 'Aggiorna PrestaShop';
@@ -1773,13 +1870,18 @@ async function updatePrestaShopState(event) {
     $('#prestashop-success-badge-slot').innerHTML = prestaShopBadge(selectedStateName);
     $('#prestashop-success-desc').textContent = result.message || `Ordine aggiornato allo stato “${selectedStateName}”. Nessuna email inviata.`;
 
+    const nextTracking = nextAttentionTracking(tracking);
     const timerFill = $('#prestashop-timer-bar-fill');
+    timerFill.style.setProperty('--prestashop-success-duration', nextTracking ? '5s' : '1.5s');
     timerFill.classList.remove('active');
     void timerFill.offsetWidth;
     timerFill.classList.add('active');
 
     let finished = false;
-    const finishAndUpdate = async () => {
+    const nextButton = $('#prestashop-success-next-btn');
+    nextButton.hidden = !nextTracking;
+
+    const finishAndUpdate = async (destinationTracking = '') => {
       if (finished) return;
       finished = true;
       if (prestashopSuccessTimeout) {
@@ -1799,13 +1901,16 @@ async function updatePrestaShopState(event) {
       highlightControlRow(tracking);
 
       // Se il dettaglio della spedizione è aperto, ricarica i dati
-      if (activeControlTrackingNumber === tracking) {
-        await openShipmentDetail(tracking);
+      if (destinationTracking) {
+        await openShipmentDetail(destinationTracking, { message: `Ordine precedente aggiornato a “${selectedStateName}”.`, kind: 'success' });
+      } else if (activeControlTrackingNumber === tracking) {
+        await openShipmentDetail(tracking, { message: `Stato PrestaShop aggiornato a “${selectedStateName}”.`, kind: 'success' });
       }
     };
 
-    $('#prestashop-success-close-btn').onclick = finishAndUpdate;
-    prestashopSuccessTimeout = setTimeout(finishAndUpdate, 1500);
+    $('#prestashop-success-close-btn').onclick = () => finishAndUpdate();
+    nextButton.onclick = () => finishAndUpdate(nextTracking);
+    prestashopSuccessTimeout = setTimeout(finishAndUpdate, nextTracking ? 5000 : 1500);
 
   } catch (error) {
     button.disabled = false;
@@ -2090,10 +2195,12 @@ async function executeBulkPrestaShopSync(actionableList) {
   prestashopBulkSuccessTimeout = setTimeout(finishAndUpdate, failCount > 0 ? 5500 : 2500);
 }
 
-function closeControlDetail() {
+function closeControlDetail({ force = false } = {}) {
   const panel = $('#shipment-detail');
+  if (!force && panel?.open && shipmentDetailDirty && !window.confirm('Hai modifiche non salvate nella gestione eccezione. Vuoi chiudere senza salvarle?')) return false;
   controlDetailRequestToken += 1;
   if (panel.open) panel.close();
+  shipmentDetailDirty = false;
   activeControlTrackingNumber = '';
   panel.innerHTML = '';
   panel.dataset.empty = 'true';
@@ -2101,6 +2208,7 @@ function closeControlDetail() {
   document.querySelectorAll('#control-table tbody tr').forEach((row) => row.classList.remove('active'));
   controlDetailTrigger?.focus?.();
   controlDetailTrigger = null;
+  return true;
 }
 
 function exportSelectedControlRows() {
@@ -2130,8 +2238,12 @@ async function markSelectedAsWorking() {
 function showView(requestedView) {
   const view = ['control', 'import', 'history', 'settings'].includes(requestedView) ? requestedView : 'control';
   if (view !== 'control') {
-    controlDetailRequestToken += 1;
-    if ($('#shipment-detail')?.open) closeControlDetail();
+    if ($('#shipment-detail')?.open) {
+      if (closeControlDetail() === false) {
+        if (location.hash !== '#control') location.hash = 'control';
+        return;
+      }
+    } else controlDetailRequestToken += 1;
   }
   activeView = view;
   document.querySelectorAll('.workspace-view').forEach((section) => { section.hidden = section.dataset.view !== view; });
@@ -2633,9 +2745,70 @@ async function loadAuditLog() {
   }
 }
 
-async function openShipmentDetail(trackingNumber) {
+function setShipmentDetailFeedback(message, kind = '') {
+  const feedback = $('#shipment-detail-feedback');
+  if (!feedback) {
+    tell('#control-dsv-message', message, kind);
+    return;
+  }
+  feedback.hidden = !message;
+  feedback.className = `detail-feedback ${kind}`.trim();
+  feedback.textContent = message;
+}
+
+function allowShipmentDetailRefresh() {
+  if (!shipmentDetailDirty) return true;
+  const discard = window.confirm('Hai modifiche non salvate nella gestione eccezione. Vuoi continuare senza salvarle?');
+  if (discard) shipmentDetailDirty = false;
+  return discard;
+}
+
+function renderShipmentAlignment(shipment, mappedState) {
+  const aligned = isPrestaShopStateAligned(shipment);
+  const hasOrder = Boolean(shipment.orderId);
+  const eventAge = relativeAge(shipment.dsvStatusAt || shipment.dsvStatusDateRaw);
+  const checkedAt = parseFlexibleDate(shipment.dsvCheckedAt || shipment.lastSeenAt);
+  const isStale = Boolean(checkedAt && Date.now() - checkedAt.getTime() > 24 * 60 * 60 * 1000);
+  const resultKind = aligned ? 'aligned' : hasOrder ? 'mismatch' : 'unavailable';
+  const resultLabel = aligned ? 'Allineato' : hasOrder ? (mappedState ? 'Da aggiornare' : 'Mappatura richiesta') : 'Ordine non collegato';
+  let resultHint = aligned
+    ? 'DSV e PrestaShop coincidono'
+    : mappedState
+      ? `Stato previsto: ${mappedState.stateName}`
+      : hasOrder ? 'Scegli lo stato PrestaShop corretto' : 'Nessun ordine associato alla spedizione';
+  if (isStale) resultHint += ' · Verifica DSV consigliata';
+  const mappingAction = hasOrder && !mappedState
+    ? '<button id="configure-detail-state-mapping" type="button" class="alignment-text-action">Configura mappatura</button>'
+    : '';
+  return `<section class="shipment-alignment ${resultKind}${isStale ? ' stale' : ''}" aria-labelledby="shipment-alignment-title"><div class="alignment-state"><span class="alignment-label" id="shipment-alignment-title">Stato DSV</span>${dsvBadge(shipment.dsvStatus)}<small>Evento: ${displayDsvEventDate(shipment)}${eventAge ? ` · ${escapeHtml(eventAge)}` : ''}</small></div><div class="alignment-direction" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12h14M14 7l5 5-5 5"/></svg></div><div class="alignment-state"><span class="alignment-label">Stato PrestaShop</span>${prestaShopBadge(shipment.currentState)}<small>${escapeHtml(shipment.orderId ? `Ordine ${shipment.orderReference || shipment.orderId}` : 'Ordine non collegato')}</small></div><div class="alignment-outcome"><span class="alignment-label">Allineamento</span><span class="alignment-result ${resultKind}"><span class="status-dot" aria-hidden="true"></span>${escapeHtml(resultLabel)}</span><small>${escapeHtml(resultHint)}</small>${mappingAction}</div></section>`;
+}
+
+function renderShipmentCaseManagement(shipment) {
+  const hasCase = Boolean(shipment.caseStatus);
+  const shouldOpen = hasCase || shipment.operationalStatus === 'Da gestire';
+  const summaryTitle = hasCase ? shipment.caseStatus : 'Nessuna eccezione aperta';
+  const summaryHint = hasCase
+    ? (shipment.assignee ? `Assegnata a ${shipment.assignee}` : 'Non assegnata')
+    : shouldOpen ? 'Richiede una decisione operativa' : 'Apri solo quando serve un intervento';
+
+  return `<details id="shipment-case-disclosure" class="shipment-case-disclosure"${shouldOpen ? ' open' : ''}><summary><span><strong>Gestione eccezione</strong><small>${escapeHtml(summaryHint)}</small></span><span class="case-disclosure-state">${hasCase ? caseBadge(shipment.caseStatus) : escapeHtml(summaryTitle)}</span></summary><form id="shipment-case-form" class="shipment-case"><div class="case-fields"><label>Stato<select id="case-status"><option${!shipment.caseStatus || shipment.caseStatus === 'Aperta' ? ' selected' : ''}>Aperta</option><option${shipment.caseStatus === 'In lavorazione' ? ' selected' : ''}>In lavorazione</option><option${shipment.caseStatus === 'Risolta' ? ' selected' : ''}>Risolta</option><option${shipment.caseStatus === 'Ignorata' ? ' selected' : ''}>Ignorata</option></select></label><label>Assegnata a<input id="case-assignee" maxlength="120" value="${escapeHtml(shipment.assignee || '')}" placeholder="Nome operatore"></label></div><label>Nota interna<textarea id="case-note" maxlength="2000" rows="3" placeholder="Aggiungi contesto per il prossimo operatore…">${escapeHtml(shipment.note || '')}</textarea></label><button>Salva gestione</button></form></details>`;
+}
+
+function renderShipmentLocalActivity(shipment) {
+  const events = Array.isArray(shipment.events) ? shipment.events : [];
+  const countLabel = `${events.length} ${events.length === 1 ? 'evento' : 'eventi'}`;
+  const eventRows = events.slice().reverse().map((event) => `<li><span class="event-marker" aria-hidden="true"></span><div><time${dateTimeAttribute(event.at)}>${displayDateTime(event.at)}</time><strong>${escapeHtml(event.label)}</strong><span>${escapeHtml(event.detail || event.type)}</span></div></li>`).join('') || '<li class="detail-empty">Nessuna attività registrata.</li>';
+  return `<details class="detail-history"><summary><span><strong>Attività interna</strong><small>Audit delle operazioni locali</small></span><span>${countLabel}</span></summary><ol class="shipment-events">${eventRows}</ol></details>`;
+}
+
+async function openShipmentDetail(trackingNumber, feedback = null) {
   try {
     const panel = $('#shipment-detail');
+    if (panel.open && activeControlTrackingNumber && activeControlTrackingNumber !== trackingNumber && shipmentDetailDirty) {
+      const discard = window.confirm('Hai modifiche non salvate nella gestione eccezione. Vuoi passare a un’altra spedizione senza salvarle?');
+      if (!discard) return;
+    }
+    shipmentDetailDirty = false;
     const requestToken = ++controlDetailRequestToken;
     if (!panel.open) controlDetailTrigger = document.activeElement;
     const shipment = await request(`/api/control-center/${encodeURIComponent(trackingNumber)}`);
@@ -2648,37 +2821,53 @@ async function openShipmentDetail(trackingNumber) {
     const dsvTimeline = shipmentDetailTimeline(shipment);
     const mappedState = mappedPrestaShopState(shipment);
     const canUpdateOrderState = Boolean(shipment.orderId) && !isPrestaShopStateAligned(shipment);
-    panel.innerHTML = `<div class="detail-heading"><div><span class="detail-kicker">Dettaglio spedizione</span><h2 id="shipment-detail-title" class="detail-title-row">${copyableValue(shipment.trackingNumber, 'Numero spedizione', 'detail-tracking-btn')}</h2><span class="detail-order">Ordine ${copyableValue(shipment.orderReference, 'Riferimento ordine', 'detail-order-btn')}</span></div><button id="close-shipment-detail" type="button" class="detail-close" aria-label="Chiudi dettaglio"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg></button></div><div class="detail-status-row">${controlBadge(shipment.operationalStatus)}${shipment.archived ? '<span class="control-status archived"><span class="status-dot" aria-hidden="true"></span>Archiviata</span>' : ''}<div class="detail-dsv-state">${dsvBadge(shipment.dsvStatus)}<small>Evento DSV: ${displayDsvEventDate(shipment)}</small></div></div><dl class="shipment-facts"><div><dt>PrestaShop</dt><dd>${escapeHtml(shipment.currentState || '—')}</dd></div><div><dt>Ultimo controllo</dt><dd>${displayDateTime(shipment.dsvCheckedAt || shipment.lastSeenAt)}</dd></div><div><dt>Gestione</dt><dd>${caseBadge(shipment.caseStatus)}</dd></div><div><dt>Assegnata a</dt><dd>${escapeHtml(shipment.assignee || 'Non assegnata')}</dd></div></dl><div id="detail-prestashop-sync" class="detail-prestashop-sync-card"><div class="sync-loading-skeleton"><span class="sync-live-dot loading" aria-hidden="true"></span><span>Verifica stato PrestaShop in corso…</span></div></div><div class="detail-actions"><button id="verify-single-dsv" type="button" ${dsvBetaSettings?.enabled ? '' : 'disabled'}>${shipment.archived ? 'Forza verifica DSV' : 'Verifica nuovamente'}</button><button id="toggle-archive-shipment" type="button" class="secondary archive-action-btn" title="${shipment.archived ? 'Ripristina tra le spedizioni attive' : 'Archivia la spedizione per escluderla dai controlli automatici'}">${shipment.archived ? '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 5.5h12v8.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5.5z"/><path d="M1 2.5h14v3H1z"/><path d="m6 9.5 2-2 2 2"/><path d="M8 7.5v5"/></svg><span>Ripristina spedizione</span>' : '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 5.5h12v8.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5.5z"/><path d="M1 2.5h14v3H1z"/><path d="M6 9.5h4"/></svg><span>Archivia spedizione</span>'}</button><a class="dsv-external-link" href="${escapeHtml(trackingUrl)}" target="_blank" rel="noopener noreferrer">Apri tracking DSV <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 5h9v9M19 5l-9 9M14 19H5V10"/></svg></a></div>${dsvTimeline.length ? `<section class="dsv-history"><div class="detail-section-heading"><h4>Storico DSV</h4><span>${dsvTimeline.length} eventi</span></div><ol class="dsv-timeline">${dsvTimeline.slice().reverse().map((event) => `<li><span class="event-marker" aria-hidden="true"></span><div><div class="dsv-event-heading"><strong>${escapeHtml(event.event || 'Evento DSV')}</strong><time>${escapeHtml(event.date || '—')}</time></div><span>${escapeHtml([event.country, event.location].filter(Boolean).join(' · ') || 'Località non disponibile')}</span>${event.reason ? `<small>${escapeHtml(event.reason)}</small>` : ''}</div></li>`).join('')}</ol></section>` : `<section class="dsv-history dsv-history-empty"><div><strong>Storico DSV non ancora acquisito</strong><span>Ripeti la verifica per importare gli eventi disponibili.</span></div><a href="${escapeHtml(trackingUrl)}" target="_blank" rel="noopener noreferrer">Consulta su DSV</a></section>`}<form id="shipment-case-form" class="shipment-case"><div class="detail-section-heading"><h4>Gestione eccezione</h4><span>Uso interno</span></div><div class="case-fields"><label>Stato<select id="case-status"><option${!shipment.caseStatus ? ' selected' : ''}>Aperta</option><option${shipment.caseStatus === 'In lavorazione' ? ' selected' : ''}>In lavorazione</option><option${shipment.caseStatus === 'Risolta' ? ' selected' : ''}>Risolta</option><option${shipment.caseStatus === 'Ignorata' ? ' selected' : ''}>Ignorata</option></select></label><label>Assegnata a<input id="case-assignee" maxlength="120" value="${escapeHtml(shipment.assignee || '')}" placeholder="Nome operatore"></label></div><label>Nota interna<textarea id="case-note" maxlength="2000" rows="3" placeholder="Aggiungi contesto per il prossimo operatore…">${escapeHtml(shipment.note || '')}</textarea></label><button>Salva gestione</button></form><section class="detail-history"><div class="detail-section-heading"><h4>Cronologia locale</h4><span>${(shipment.events || []).length} eventi</span></div><ol class="shipment-events">${(shipment.events || []).slice().reverse().map((event) => `<li><span class="event-marker" aria-hidden="true"></span><div><time>${displayDateTime(event.at)}</time><strong>${escapeHtml(event.label)}</strong><span>${escapeHtml(event.detail || event.type)}</span></div></li>`).join('') || '<li class="detail-empty">Nessun evento disponibile.</li>'}</ol></section>`;
-    panel.querySelector('.dsv-history').outerHTML = renderShipmentDsvTimeline(dsvTimeline, trackingUrl);
-    if (canUpdateOrderState) {
-      panel.querySelector('.detail-actions').insertAdjacentHTML('afterbegin', `<button id="update-detail-prestashop-state" type="button" title="${escapeHtml(mappedState ? `Imposta ${mappedState.stateName} su PrestaShop` : 'Scegli il nuovo stato PrestaShop')}">Aggiorna stato ordine${mappedState ? `<small>${escapeHtml(mappedState.stateName)}</small>` : ''}</button>`);
-      panel.querySelector('#verify-single-dsv').classList.add('secondary');
-    }
+    const navigation = shipmentDetailNavigation(shipment.trackingNumber);
+    const checkedAge = relativeAge(shipment.dsvCheckedAt || shipment.lastSeenAt);
+    const updateAction = canUpdateOrderState
+      ? `<button id="update-detail-prestashop-state" type="button"><span>Aggiorna PrestaShop</span><small>${escapeHtml(mappedState ? `Imposta ${mappedState.stateName}` : 'Scegli lo stato')}</small></button>`
+      : '';
+    const archiveAction = shipment.archived
+      ? '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 5.5h12v8.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5.5zM1 2.5h14v3H1zM6 9.5l2-2 2 2M8 7.5v5"/></svg><span>Ripristina spedizione</span>'
+      : '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 5.5h12v8.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5.5zM1 2.5h14v3H1zM6 9.5h4"/></svg><span>Archivia spedizione</span>';
+
+    panel.innerHTML = `<div class="detail-heading"><div><h2 id="shipment-detail-title" class="detail-title-row">${copyableValue(shipment.trackingNumber, 'Numero spedizione', 'detail-tracking-btn')}</h2><span class="detail-order">Ordine ${copyableValue(shipment.orderReference, 'Riferimento ordine', 'detail-order-btn')}${shipment.archived ? '<span class="detail-archived-label">Archiviata</span>' : ''}</span></div><button id="close-shipment-detail" type="button" class="detail-close" aria-label="Chiudi dettaglio"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg></button></div>${renderShipmentAlignment(shipment, mappedState)}<div id="shipment-detail-feedback" class="detail-feedback" role="status" aria-live="polite" hidden></div><div class="detail-dialog-body"><div class="detail-dialog-primary">${renderShipmentDsvTimeline(dsvTimeline, trackingUrl)}</div><aside class="detail-dialog-operations" aria-label="Gestione operativa"><dl class="detail-operations-summary"><div><dt>Ultimo controllo</dt><dd>${displayDateTime(shipment.dsvCheckedAt || shipment.lastSeenAt)}</dd></div><div><dt>Gestione</dt><dd>${caseBadge(shipment.caseStatus)}</dd></div><div><dt>Assegnata a</dt><dd>${escapeHtml(shipment.assignee || 'Non assegnata')}</dd></div></dl><div id="detail-prestashop-sync" class="detail-prestashop-sync-card"><div class="sync-loading-skeleton" role="status"><span class="sync-live-dot loading" aria-hidden="true"></span><span>Verifica collegamento PrestaShop…</span></div></div>${renderShipmentCaseManagement(shipment)}${renderShipmentLocalActivity(shipment)}</aside></div><div class="detail-actions"><div class="detail-actions-main">${updateAction}<button id="verify-single-dsv" type="button" class="${canUpdateOrderState ? 'secondary' : ''}" ${dsvBetaSettings?.enabled ? '' : 'disabled'}>${shipment.archived ? 'Forza verifica DSV' : 'Verifica DSV'}</button><a class="dsv-external-link" href="${escapeHtml(trackingUrl)}" target="_blank" rel="noopener noreferrer">Apri su DSV <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 5h9v9M19 5l-9 9M14 19H5V10"/></svg></a></div><details class="detail-more-menu"><summary aria-label="Altre azioni"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg></summary><div><button id="toggle-archive-shipment" type="button" title="${shipment.archived ? 'Ripristina tra le spedizioni attive' : 'Archivia la spedizione per escluderla dai controlli automatici'}">${archiveAction}</button></div></details></div>`;
+    const closeButton = panel.querySelector('#close-shipment-detail');
+    closeButton.insertAdjacentHTML('beforebegin', `<nav class="detail-record-navigation" aria-label="Navigazione spedizioni nella pagina"><button id="shipment-detail-previous" type="button" aria-label="Spedizione precedente, scorciatoia K" aria-keyshortcuts="K"${navigation.previous ? '' : ' disabled'}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg></button><span>${navigation.index >= 0 ? navigation.index + 1 : '—'} di ${navigation.total}</span><button id="shipment-detail-next" type="button" aria-label="Spedizione successiva, scorciatoia J" aria-keyshortcuts="J"${navigation.next ? '' : ' disabled'}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 6 6 6-6 6"/></svg></button></nav>`);
+    const lastCheckValue = panel.querySelector('.detail-operations-summary dd');
+    if (lastCheckValue && checkedAge) lastCheckValue.insertAdjacentHTML('beforeend', `<small class="detail-freshness${panel.querySelector('.shipment-alignment.stale') ? ' stale' : ''}">${escapeHtml(checkedAge)}</small>`);
+    const caseForm = panel.querySelector('#shipment-case-form');
+    const caseSaveButton = caseForm.querySelector('button');
+    caseSaveButton.disabled = true;
+    panel.querySelector('#verify-single-dsv')?.setAttribute('aria-keyshortcuts', 'V');
+    panel.querySelector('#update-detail-prestashop-state')?.setAttribute('aria-keyshortcuts', 'U');
     const heading = panel.querySelector('.detail-heading');
     heading.setAttribute('tabindex', '-1');
-    const dialogBody = document.createElement('div');
-    const primary = document.createElement('div');
-    const operations = document.createElement('div');
-    dialogBody.className = 'detail-dialog-body';
-    primary.className = 'detail-dialog-primary';
-    operations.className = 'detail-dialog-operations';
-    primary.append(panel.querySelector('.detail-status-row'), panel.querySelector('.shipment-facts'), panel.querySelector('#detail-prestashop-sync'), panel.querySelector('.detail-actions'), panel.querySelector('.dsv-history'));
-    operations.append(panel.querySelector('.shipment-case'), panel.querySelector('.detail-history'));
-    dialogBody.append(primary, operations);
-    panel.replaceChildren(heading, dialogBody);
     panel.setAttribute('aria-labelledby', 'shipment-detail-title');
     if (!panel.open) panel.showModal();
     $('#close-shipment-detail').addEventListener('click', closeControlDetail);
     setTimeout(() => heading.focus(), 0);
+    if (feedback?.message) setShipmentDetailFeedback(feedback.message, feedback.kind || 'success');
     loadPrestaShopLiveSync(shipment, requestToken);
-    $('#update-detail-prestashop-state')?.addEventListener('click', () => openPrestaShopStateDialog(shipment.trackingNumber));
+    $('#shipment-detail-previous')?.addEventListener('click', () => navigation.previous && openShipmentDetail(navigation.previous));
+    $('#shipment-detail-next')?.addEventListener('click', () => navigation.next && openShipmentDetail(navigation.next));
+    $('#configure-detail-state-mapping')?.addEventListener('click', () => {
+      if (closeControlDetail() === false) return;
+      location.hash = 'settings';
+      setTimeout(() => $('#state-mapping-view')?.scrollIntoView({ block: 'start', behavior: 'smooth' }), 120);
+    });
+    $('#update-detail-prestashop-state')?.addEventListener('click', () => {
+      if (allowShipmentDetailRefresh()) openPrestaShopStateDialog(shipment.trackingNumber);
+    });
     $('#verify-single-dsv').addEventListener('click', async () => {
+      if (!allowShipmentDetailRefresh()) return;
       const button = $('#verify-single-dsv'); button.disabled = true;
-      try { await startControlDsvVerification([shipment.trackingNumber]); await openShipmentDetail(shipment.trackingNumber); }
-      catch (e) { tell('#control-dsv-message', e.message, 'error'); }
+      setShipmentDetailFeedback('Verifica DSV in corso…');
+      try { await startControlDsvVerification([shipment.trackingNumber]); await openShipmentDetail(shipment.trackingNumber, { message: 'Verifica DSV completata.', kind: 'success' }); }
+      catch (e) { setShipmentDetailFeedback(e.message, 'error'); }
       finally { button.disabled = false; }
     });
     $('#toggle-archive-shipment')?.addEventListener('click', async () => {
+      if (!allowShipmentDetailRefresh()) return;
       const button = $('#toggle-archive-shipment');
       button.disabled = true;
       const nextArchived = !shipment.archived;
@@ -2688,25 +2877,36 @@ async function openShipmentDetail(trackingNumber) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ archived: nextArchived }),
         });
-        tell('#control-dsv-message', res.message, 'success');
         await refreshControlCenter();
-        await openShipmentDetail(shipment.trackingNumber);
+        await openShipmentDetail(shipment.trackingNumber, { message: res.message, kind: 'success' });
       } catch (e) {
-        tell('#control-dsv-message', e.message, 'error');
+        setShipmentDetailFeedback(e.message, 'error');
       } finally {
         button.disabled = false;
       }
     });
-    $('#shipment-case-form').addEventListener('submit', async (event) => {
+    caseForm.addEventListener('input', () => {
+      shipmentDetailDirty = true;
+      caseSaveButton.disabled = false;
+    });
+    caseForm.addEventListener('change', () => {
+      shipmentDetailDirty = true;
+      caseSaveButton.disabled = false;
+    });
+    caseForm.addEventListener('submit', async (event) => {
       event.preventDefault();
-      const button = $('#shipment-case-form button'); button.disabled = true;
+      const button = caseSaveButton; button.disabled = true;
       try {
         await request(`/api/control-center/${encodeURIComponent(shipment.trackingNumber)}/case`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ caseStatus: $('#case-status').value, assignee: $('#case-assignee').value, note: $('#case-note').value }) });
-        await refreshControlCenter(); await openShipmentDetail(shipment.trackingNumber);
-      } catch (e) { tell('#control-dsv-message', e.message, 'error'); }
+        shipmentDetailDirty = false;
+        await refreshControlCenter(); await openShipmentDetail(shipment.trackingNumber, { message: 'Gestione salvata.', kind: 'success' });
+      } catch (e) { setShipmentDetailFeedback(e.message, 'error'); }
       finally { button.disabled = false; }
     });
-  } catch (e) { tell('#control-dsv-message', e.message, 'error'); }
+  } catch (e) {
+    if ($('#shipment-detail')?.open) setShipmentDetailFeedback(e.message, 'error');
+    else tell('#control-dsv-message', e.message, 'error');
+  }
 }
 
 async function loadPrestaShopLiveSync(shipment, requestToken) {
@@ -2718,11 +2918,11 @@ async function loadPrestaShopLiveSync(shipment, requestToken) {
 
     if (!res.ok) {
       if (res.notConfigured) {
-        container.innerHTML = `<div class="sync-card-header"><span class="sync-card-title"><span class="sync-live-dot error" aria-hidden="true"></span>Sincronizzazione PrestaShop</span></div><p class="sync-status-msg" style="color:var(--muted);margin:4px 0;">PrestaShop non configurato. Configura URL e chiave Webservice per attivare il controllo live.</p>`;
+        container.innerHTML = `<div class="sync-card-header"><span class="sync-card-title"><span class="sync-live-dot error" aria-hidden="true"></span>Collegamento PrestaShop</span></div><p class="sync-status-msg" style="color:var(--muted);margin:4px 0;">PrestaShop non configurato. Configura URL e chiave Webservice per verificare tracking e corriere.</p>`;
       } else {
-        container.innerHTML = `<div class="sync-card-header"><span class="sync-card-title"><span class="sync-live-dot error" aria-hidden="true"></span>Sincronizzazione PrestaShop</span><button id="retry-prestashop-live-btn" type="button" class="sync-refresh-btn" title="Riprova verifica live"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2v4h-4M2 14v-4h4"/><path d="M2.5 9a6 6 0 0 1 9.5-4.5L14 6M13.5 7a6 6 0 0 1-9.5 4.5L2 10"/></svg></button></div><p class="sync-status-msg" style="color:var(--danger);margin:4px 0;">${escapeHtml(res.error || 'Impossibile verificare lo stato live su PrestaShop.')}</p>`;
+        container.innerHTML = `<div class="sync-card-header"><span class="sync-card-title"><span class="sync-live-dot error" aria-hidden="true"></span>Collegamento PrestaShop</span><button id="retry-prestashop-live-btn" type="button" class="sync-refresh-btn" aria-label="Riprova verifica collegamento PrestaShop"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2v4h-4M2 14v-4h4"/><path d="M2.5 9a6 6 0 0 1 9.5-4.5L14 6M13.5 7a6 6 0 0 1-9.5 4.5L2 10"/></svg></button></div><p class="sync-status-msg" style="color:var(--danger);margin:4px 0;">${escapeHtml(res.error || 'Impossibile verificare tracking e corriere su PrestaShop.')}</p>`;
         $('#retry-prestashop-live-btn')?.addEventListener('click', () => {
-          container.innerHTML = `<div class="sync-loading-skeleton"><span class="sync-live-dot loading" aria-hidden="true"></span><span>Verifica stato PrestaShop in corso…</span></div>`;
+          container.innerHTML = `<div class="sync-loading-skeleton" role="status"><span class="sync-live-dot loading" aria-hidden="true"></span><span>Verifica collegamento PrestaShop…</span></div>`;
           loadPrestaShopLiveSync(shipment, requestToken);
         });
       }
@@ -2733,11 +2933,11 @@ async function loadPrestaShopLiveSync(shipment, requestToken) {
 
     let badgeHtml = '';
     if (trackingStatus === 'matches') {
-      badgeHtml = `<span class="sync-badge matches"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 8.5 6.5 12 13 4"/></svg> Sincronizzato (${copyableValue(liveTracking, 'Tracking PrestaShop', 'live-tracking-copy-btn')})</span>`;
+      badgeHtml = `<span class="sync-badge matches"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 8.5 6.5 12 13 4"/></svg><span>Sincronizzato</span>${copyableValue(liveTracking, 'Tracking PrestaShop', 'live-tracking-copy-btn')}</span>`;
     } else if (trackingStatus === 'missing') {
       badgeHtml = `<span class="sync-badge missing"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="7"/><line x1="8" y1="5" x2="8" y2="8"/><circle cx="8" cy="11" r="0.75" fill="currentColor"/></svg> Non presente su PrestaShop</span>`;
     } else {
-      badgeHtml = `<span class="sync-badge differs"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="7"/><line x1="8" y1="5" x2="8" y2="8"/><circle cx="8" cy="11" r="0.75" fill="currentColor"/></svg> Diverso: ${copyableValue(liveTracking, 'Tracking PrestaShop', 'live-tracking-copy-btn')}</span>`;
+      badgeHtml = `<span class="sync-badge differs"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="7"/><line x1="8" y1="5" x2="8" y2="8"/><circle cx="8" cy="11" r="0.75" fill="currentColor"/></svg><span>Diverso</span>${copyableValue(liveTracking, 'Tracking PrestaShop', 'live-tracking-copy-btn')}</span>`;
     }
 
     let actionHtml = '';
@@ -2755,9 +2955,9 @@ async function loadPrestaShopLiveSync(shipment, requestToken) {
       <div class="sync-card-header">
         <span class="sync-card-title">
           <span class="sync-live-dot" aria-hidden="true"></span>
-          Sincronizzazione PrestaShop Live
+          Collegamento PrestaShop
         </span>
-        <button id="refresh-prestashop-live-btn" type="button" class="sync-refresh-btn" title="Ricarica stato live da PrestaShop">
+        <button id="refresh-prestashop-live-btn" type="button" class="sync-refresh-btn" aria-label="Aggiorna collegamento PrestaShop">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2v4h-4M2 14v-4h4"/><path d="M2.5 9a6 6 0 0 1 9.5-4.5L14 6M13.5 7a6 6 0 0 1-9.5 4.5L2 10"/></svg>
         </button>
       </div>
@@ -2785,6 +2985,7 @@ async function loadPrestaShopLiveSync(shipment, requestToken) {
     const syncBtn = $('#sync-prestashop-btn');
     if (syncBtn) {
       syncBtn.addEventListener('click', async () => {
+        if (!allowShipmentDetailRefresh()) return;
         const isOverwrite = Boolean(syncBtn.dataset.overwrite);
         if (isOverwrite) {
           const confirmMsg = `Attenzione: su PrestaShop è presente il tracking "${liveTracking}".\n\nVuoi davvero sovrascriverlo con "${dsvTracking}" e impostare il corriere "${defaultCarrierName}"?`;
@@ -2799,11 +3000,10 @@ async function loadPrestaShopLiveSync(shipment, requestToken) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ overwrite: isOverwrite, carrierId: defaultCarrierId }),
           });
-          tell('#control-dsv-message', result.message, 'success');
           await refreshControlCenter();
-          await openShipmentDetail(shipment.trackingNumber);
+          await openShipmentDetail(shipment.trackingNumber, { message: result.message, kind: 'success' });
         } catch (err) {
-          tell('#control-dsv-message', err.message, 'error');
+          setShipmentDetailFeedback(err.message, 'error');
           syncBtn.disabled = false;
           syncBtn.innerHTML = originalContent;
         }
@@ -2811,7 +3011,7 @@ async function loadPrestaShopLiveSync(shipment, requestToken) {
     }
   } catch (err) {
     if (requestToken !== controlDetailRequestToken) return;
-    container.innerHTML = `<div class="sync-card-header"><span class="sync-card-title"><span class="sync-live-dot error" aria-hidden="true"></span>Sincronizzazione PrestaShop</span></div><p class="sync-status-msg" style="color:var(--danger);margin:4px 0;">Errore: ${escapeHtml(err.message)}</p>`;
+    container.innerHTML = `<div class="sync-card-header"><span class="sync-card-title"><span class="sync-live-dot error" aria-hidden="true"></span>Collegamento PrestaShop</span></div><p class="sync-status-msg" style="color:var(--danger);margin:4px 0;">Errore: ${escapeHtml(err.message)}</p>`;
   }
 }
 
