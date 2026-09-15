@@ -224,7 +224,28 @@ app.post('/api/dsv-beta/jobs', (req, res) => {
     const trackingNumbers = [...new Set((req.body?.trackingNumbers ?? []).map((value) => String(value).trim()).filter(Boolean))];
     if (!trackingNumbers.length) throw new Error('Seleziona almeno una riga con un tracking da verificare.');
     if (trackingNumbers.length > DSV_BETA_MAX_ROWS) throw new Error(`La beta accetta al massimo ${DSV_BETA_MAX_ROWS} spedizioni per avvio.`);
-    const job = { id: randomUUID(), status: 'queued', progress: { completed: 0, total: trackingNumbers.length }, result: null, error: null };
+    const job = {
+      id: randomUUID(),
+      status: 'queued',
+      progress: {
+        completed: 0,
+        total: trackingNumbers.length,
+        phase: 'queued',
+        currentTracking: '',
+        lastTracking: '',
+        lastStatus: '',
+        cachedCount: 0,
+        errorCount: 0,
+        requestedSpeedProfile: connection.dsvBeta?.speedProfile === 'fast' ? 'fast' : 'safe',
+        effectiveSpeedProfile: connection.dsvBeta?.speedProfile === 'fast' ? 'fast' : 'safe',
+        fallbackReason: '',
+        queuedAt: new Date().toISOString(),
+        startedAt: '',
+        updatedAt: new Date().toISOString(),
+      },
+      result: null,
+      error: null,
+    };
     dsvBetaJobs.set(job.id, job);
     scheduleDsvBetaJob(job, trackingNumbers);
     res.status(202).json({ jobId: job.id, progress: job.progress });
@@ -856,10 +877,15 @@ function dsvCacheTtl(result) {
 function scheduleDsvBetaJob(job, trackingNumbers) {
   dsvBetaQueue = dsvBetaQueue.then(async () => {
     job.status = 'running';
+    job.progress.phase = 'preparing';
+    job.progress.startedAt = new Date().toISOString();
+    job.progress.updatedAt = job.progress.startedAt;
     await runDsvBetaJob(job, trackingNumbers);
   }).catch((error) => {
     job.error = error.message;
     job.status = 'failed';
+    job.progress.phase = 'failed';
+    job.progress.updatedAt = new Date().toISOString();
   });
 }
 
@@ -904,6 +930,14 @@ async function runDsvBetaJob(job, trackingNumbers) {
   try {
     const results = [];
     for (const [index, trackingNumber] of trackingNumbers.entries()) {
+      const profileBeforeCheck = beta.getRuntimeProfile();
+      Object.assign(job.progress, {
+        phase: 'checking',
+        currentTracking: trackingNumber,
+        effectiveSpeedProfile: profileBeforeCheck.effective,
+        fallbackReason: profileBeforeCheck.fallbackReason,
+        updatedAt: new Date().toISOString(),
+      });
       const cached = dsvBetaCache.get(trackingNumber);
       if (cached && cached.expiresAt > Date.now() && cached.parserVersion === DSV_PARSER_VERSION) {
         results.push({ trackingNumber, ...cached.value, cached: true });
@@ -944,17 +978,40 @@ async function runDsvBetaJob(job, trackingNumbers) {
           }
         }
       }
-      job.progress.completed = index + 1;
       const lastResult = results[results.length - 1];
+      const runtimeProfile = beta.getRuntimeProfile();
+      Object.assign(job.progress, {
+        completed: index + 1,
+        phase: index < trackingNumbers.length - 1 && !lastResult?.cached ? 'waiting' : 'checking',
+        lastTracking: lastResult?.trackingNumber || trackingNumber,
+        lastStatus: lastResult?.status || '',
+        cachedCount: results.filter((result) => result.cached).length,
+        errorCount: results.filter((result) => result.status === 'Errore beta').length,
+        effectiveSpeedProfile: runtimeProfile.effective,
+        fallbackReason: runtimeProfile.fallbackReason,
+        updatedAt: new Date().toISOString(),
+      });
       if (index < trackingNumbers.length - 1 && !lastResult?.cached) {
         await pause(beta.getPacingDelay('manual'));
       }
     }
     const runtimeProfile = beta.getRuntimeProfile();
     job.result = { results, safeguards: { maxRows: DSV_BETA_MAX_ROWS, intervalMs: dsvBetaConfigResponse().intervalMs, cacheHours: DSV_BETA_CACHE_TTL_MS / 3_600_000, movingCacheHours: DSV_MOVING_CACHE_TTL_MS / 3_600_000, parserVersion: DSV_PARSER_VERSION, speedProfile: runtimeProfile.requested, effectiveSpeedProfile: runtimeProfile.effective, fallbackReason: runtimeProfile.fallbackReason } };
+    job.progress.phase = 'syncing';
+    job.progress.currentTracking = '';
+    job.progress.updatedAt = new Date().toISOString();
     await syncDsvShipments(results);
     job.status = 'complete';
-  } catch (error) { job.error = error.message; job.status = 'failed'; }
+    job.progress.phase = 'complete';
+    job.progress.finishedAt = new Date().toISOString();
+    job.progress.updatedAt = job.progress.finishedAt;
+  } catch (error) {
+    job.error = error.message;
+    job.status = 'failed';
+    job.progress.phase = 'failed';
+    job.progress.currentTracking = '';
+    job.progress.updatedAt = new Date().toISOString();
+  }
   finally { await beta.close(); }
 }
 

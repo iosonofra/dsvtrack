@@ -527,20 +527,100 @@ function updateControlSelectionUi(records = []) {
   toggle.indeterminate = pageSelected > 0 && pageSelected < records.length;
 }
 
-function updateControlDsvProgress(progress) {
-  const percentage = progress.total ? Math.round((progress.completed / progress.total) * 100) : 0;
-  $('#control-dsv-progress').hidden = false;
+function formatControlProgressDuration(milliseconds) {
+  const totalSeconds = Math.max(0, Math.round(Number(milliseconds || 0) / 1000));
+  if (totalSeconds < 60) return `${totalSeconds} s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return seconds ? `${minutes} min ${seconds} s` : `${minutes} min`;
+}
+
+function ensureControlDsvProgressUi() {
+  const container = $('#control-dsv-progress');
+  if (!container || container.dataset.enhanced === 'true') return container;
+  container.dataset.enhanced = 'true';
+  container.classList.add('control-operation-progress');
+  container.removeAttribute('aria-live');
+  container.setAttribute('aria-label', 'Avanzamento verifica DSV');
+  const title = container.querySelector('.progress-heading strong');
+  const track = container.querySelector('.progress-track');
+  title.id = 'control-dsv-progress-title';
+  track.setAttribute('role', 'progressbar');
+  track.setAttribute('aria-labelledby', title.id);
+  track.setAttribute('aria-valuemin', '0');
+  track.insertAdjacentHTML('beforebegin', '<div class="control-progress-current"><span id="control-dsv-progress-phase">Preparazione Camoufox</span><span id="control-dsv-progress-tracking" hidden></span></div>');
+  track.insertAdjacentHTML('afterend', '<div class="control-progress-meta"><span id="control-dsv-progress-mode"></span><span id="control-dsv-progress-batch" hidden></span><span id="control-dsv-progress-elapsed"></span><span id="control-dsv-progress-eta" hidden></span><span id="control-dsv-progress-counts" hidden></span><span id="control-dsv-progress-outcome" hidden></span></div>');
+  return container;
+}
+
+function updateControlDsvProgress(progress, context = {}) {
+  const container = ensureControlDsvProgressUi();
+  const completedBefore = Number(context.completedBefore || 0);
+  const total = Number(context.total || progress.total || 0);
+  const completed = Math.min(total, completedBefore + Number(progress.completed || 0));
+  const percentage = total ? Math.round((completed / total) * 100) : 0;
+  const jobState = context.jobStatus || progress.phase || 'running';
+  const fallbackActive = Boolean(progress.fallbackReason) || (progress.requestedSpeedProfile === 'fast' && progress.effectiveSpeedProfile === 'safe');
+  const phaseLabels = {
+    queued: 'In coda: attesa disponibilità Camoufox',
+    preparing: 'Preparazione sessione Camoufox',
+    checking: 'Lettura stato dalla pagina DSV',
+    waiting: 'Pausa di sicurezza prima della prossima spedizione',
+    syncing: 'Salvataggio dei risultati nel tracking center',
+    complete: 'Verifica DSV completata',
+    failed: 'Verifica DSV interrotta',
+  };
+  const operationStartedAt = Date.parse(context.operationStartedAt || progress.startedAt || '');
+  const elapsedMs = Number.isFinite(operationStartedAt) ? Date.now() - operationStartedAt : 0;
+  const remainingMs = completed > 0 && completed < total ? (elapsedMs / completed) * (total - completed) : 0;
+  const cachedCount = Number(context.cachedBefore || 0) + Number(progress.cachedCount || 0);
+  const errorCount = Number(context.errorBefore || 0) + Number(progress.errorCount || 0);
+  const requestedMode = progress.requestedSpeedProfile || dsvBetaSettings?.speedProfile || 'safe';
+  const effectiveMode = progress.effectiveSpeedProfile || requestedMode;
+
+  container.hidden = false;
+  container.dataset.state = fallbackActive ? 'fallback' : jobState;
+  container.setAttribute('aria-busy', ['queued', 'preparing', 'checking', 'waiting', 'syncing', 'running'].includes(jobState) ? 'true' : 'false');
   $('#control-dsv-progress-bar').style.width = `${percentage}%`;
-  $('#control-dsv-progress-text').textContent = `${percentage}% · ${progress.completed}/${progress.total} spedizioni`;
+  $('#control-dsv-progress-text').textContent = `${completed} di ${total} · ${percentage}%`;
+  const track = container.querySelector('.progress-track');
+  track.setAttribute('aria-valuemax', String(total));
+  track.setAttribute('aria-valuenow', String(completed));
+  track.setAttribute('aria-valuetext', `${completed} spedizioni verificate su ${total}`);
+  $('#control-dsv-progress-phase').textContent = phaseLabels[progress.phase] || 'Verifica DSV in corso';
+
+  const tracking = $('#control-dsv-progress-tracking');
+  tracking.textContent = progress.currentTracking || '';
+  tracking.hidden = !progress.currentTracking;
+
+  const mode = $('#control-dsv-progress-mode');
+  mode.textContent = effectiveMode === 'fast' ? 'Modalità rapida' : fallbackActive ? 'Modalità affidabile · fallback' : 'Modalità affidabile';
+  mode.title = progress.fallbackReason || '';
+  mode.classList.toggle('fallback', fallbackActive);
+
+  const batch = $('#control-dsv-progress-batch');
+  batch.textContent = `Blocco ${Number(context.batchIndex || 0) + 1} di ${Number(context.batchCount || 1)}`;
+  batch.hidden = Number(context.batchCount || 1) <= 1;
+  $('#control-dsv-progress-elapsed').textContent = `Trascorsi ${formatControlProgressDuration(elapsedMs)}`;
+
+  const eta = $('#control-dsv-progress-eta');
+  eta.textContent = `Stima ${formatControlProgressDuration(remainingMs)} rimanenti`;
+  eta.hidden = !remainingMs || jobState === 'queued';
+
+  const counts = $('#control-dsv-progress-counts');
+  counts.textContent = `${cachedCount} da cache · ${errorCount} errori`;
+  counts.hidden = cachedCount === 0 && errorCount === 0;
+
+  const outcome = $('#control-dsv-progress-outcome');
+  outcome.textContent = progress.lastStatus ? `Ultimo esito: ${progress.lastStatus}` : '';
+  outcome.hidden = !progress.lastStatus;
 }
 
 async function waitForControlDsvBeta(jobId, batchContext = { completedBefore: 0, total: 0, batchIndex: 0, batchCount: 1 }) {
   const snapshot = await request(`/api/dsv-beta/jobs/${jobId}`);
-  updateControlDsvProgress({ completed: batchContext.completedBefore + snapshot.progress.completed, total: batchContext.total || snapshot.progress.total });
+  updateControlDsvProgress(snapshot.progress, { ...batchContext, jobStatus: snapshot.status });
   if (snapshot.status === 'queued' || snapshot.status === 'running') {
-    const batchLabel = batchContext.batchCount > 1 ? `Blocco ${batchContext.batchIndex + 1} di ${batchContext.batchCount}. ` : '';
-    const modeLabel = dsvBetaSettings?.speedProfile === 'fast' ? 'modalità rapida' : 'modalità affidabile';
-    tell('#control-dsv-message', snapshot.status === 'queued' ? `${batchLabel}In coda: Camoufox sta completando un’altra richiesta.` : `${batchLabel}Verifica DSV in corso, una spedizione alla volta · ${modeLabel}.`);
+    tell('#control-dsv-message', '');
     await new Promise((resolve) => setTimeout(resolve, 750));
     return waitForControlDsvBeta(jobId, batchContext);
   }
@@ -567,20 +647,33 @@ async function startControlDsvVerification(trackingNumbers) {
 
   const batches = [];
   for (let index = 0; index < uniqueTrackingNumbers.length; index += maxRows) batches.push(uniqueTrackingNumbers.slice(index, index + maxRows));
+  const operationStartedAt = new Date().toISOString();
   $('#control-dsv-progress strong').textContent = 'Verifica DSV in corso';
-  updateControlDsvProgress({ completed: 0, total: uniqueTrackingNumbers.length });
-  tell('#control-dsv-message', batches.length > 1 ? `Preparazione di ${batches.length} blocchi sequenziali…` : 'Verifica DSV in preparazione…');
+  updateControlDsvProgress({ completed: 0, total: uniqueTrackingNumbers.length, phase: 'preparing', requestedSpeedProfile: dsvBetaSettings?.speedProfile }, { total: uniqueTrackingNumbers.length, batchCount: batches.length, operationStartedAt });
+  tell('#control-dsv-message', '');
   const results = [];
   let safeguards = null;
   try {
     for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
       const batch = batches[batchIndex];
       const completedBefore = results.length;
+      const cachedBefore = results.filter((row) => row.cached).length;
+      const errorBefore = results.filter((row) => row.status === 'Errore beta').length;
       const { jobId } = await request('/api/dsv-beta/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trackingNumbers: batch }) });
-      const result = await waitForControlDsvBeta(jobId, { completedBefore, total: uniqueTrackingNumbers.length, batchIndex, batchCount: batches.length });
+      const result = await waitForControlDsvBeta(jobId, { completedBefore, cachedBefore, errorBefore, total: uniqueTrackingNumbers.length, batchIndex, batchCount: batches.length, operationStartedAt });
       results.push(...result.results);
       safeguards = result.safeguards;
-      updateControlDsvProgress({ completed: results.length, total: uniqueTrackingNumbers.length });
+      updateControlDsvProgress({
+        completed: results.length,
+        total: uniqueTrackingNumbers.length,
+        phase: results.length === uniqueTrackingNumbers.length ? 'complete' : 'preparing',
+        cachedCount: results.filter((row) => row.cached).length,
+        errorCount: results.filter((row) => row.status === 'Errore beta').length,
+        lastStatus: results.at(-1)?.status || '',
+        requestedSpeedProfile: safeguards?.speedProfile,
+        effectiveSpeedProfile: safeguards?.effectiveSpeedProfile,
+        fallbackReason: safeguards?.fallbackReason,
+      }, { total: uniqueTrackingNumbers.length, batchIndex, batchCount: batches.length, operationStartedAt, jobStatus: results.length === uniqueTrackingNumbers.length ? 'complete' : 'preparing' });
     }
   } catch (error) {
     const progressElem = $('#control-dsv-progress');

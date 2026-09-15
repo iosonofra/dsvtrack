@@ -105,6 +105,36 @@ main[data-active-view="control"] .steps, main[data-active-view="exceptions"] .st
 .control-center-card > .progress { margin-top: 9px; padding: 9px 11px; }
 .control-center-card > #control-dsv-message { margin-top: 7px; }
 .control-center-card > #control-dsv-message:empty { display: none; }
+.control-center-card > .control-operation-progress { display: grid; gap: 7px; padding: 10px 12px; border-color: #b8cbe5; border-radius: 3px; background: #f4f8fd; }
+.control-operation-progress .progress-heading { align-items: center; margin: 0; color: var(--dsv-navy); font-size: .76rem; }
+.control-operation-progress .progress-heading strong { display: inline-flex; align-items: center; gap: 7px; }
+.control-operation-progress .progress-heading strong::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--dsv-blue); }
+.control-operation-progress .progress-heading > span { color: #405a7b; font-size: .7rem; font-weight: 750; font-variant-numeric: tabular-nums; }
+.control-progress-current { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; color: #405a7b; font-size: .68rem; font-weight: 650; }
+.control-progress-current > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.control-progress-current > span:last-child { flex: 0 0 auto; color: var(--dsv-navy); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: .67rem; font-weight: 750; }
+.control-operation-progress .progress-track { position: relative; height: 7px; margin: 0; border-radius: 2px; background: #dbe6f3; }
+.control-operation-progress .progress-bar { border-radius: 2px; background: var(--dsv-blue); }
+.control-progress-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 0; min-height: 17px; color: #536984; font-size: .63rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+.control-progress-meta > span { display: inline-flex; align-items: center; }
+.control-progress-meta > span:not(:first-child)::before { content: ''; width: 1px; height: 11px; margin: 0 8px; background: #b9c8da; }
+.control-progress-meta .fallback { color: #8a5700; }
+.control-operation-progress[data-state="fallback"] .progress-heading strong::before { background: var(--warning); }
+.control-operation-progress[data-state="failed"] .progress-heading strong::before { background: var(--danger); }
+.control-operation-progress[data-state="failed"] .progress-bar { background: var(--danger); }
+.control-operation-progress[data-state="complete"] .progress-heading strong::before,
+.control-operation-progress[data-state="complete"] .progress-bar { background: var(--success); }
+.control-operation-progress[data-state="queued"] .progress-heading strong::before { background: #7890ae; }
+.control-operation-progress[data-state="queued"] .progress-track::after { content: ''; position: absolute; inset-block: 0; left: 0; width: 24%; border-radius: inherit; background: var(--dsv-blue); animation: control-progress-queue 1.25s cubic-bezier(.22,1,.36,1) infinite; }
+
+@keyframes control-progress-queue {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(430%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .control-operation-progress[data-state="queued"] .progress-track::after { left: 38%; animation: none; }
+}
 
 .control-metrics { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); margin: 8px 16px 6px; border: 1px solid var(--line); }
 .control-metric { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; padding: 7px 12px; border: 0; border-right: 1px solid var(--line); border-radius: 0; background: #fff; }
