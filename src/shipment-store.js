@@ -197,6 +197,40 @@ export async function syncShipmentPrestaShopShipping(trackingNumber, { orderId, 
   return { ...record, dsvStatus: normalizeStoredDsvStatus(record.dsvStatus), operationalStatus: operationalStatus(record) };
 }
 
+export async function linkShipmentToPrestaShopOrder(trackingNumber, {
+  orderId,
+  orderReference,
+  orderDate,
+  currentStateId,
+  currentStateName,
+  trackingNumberOnPrestaShop,
+  carrierId,
+  carrierName,
+} = {}) {
+  const db = await load();
+  const record = db.shipments[trackingNumber];
+  if (!record) throw new Error('Spedizione non presente nel centro di controllo.');
+  const normalizedOrderId = String(orderId || '').trim();
+  if (!normalizedOrderId) throw new Error('L’ordine PrestaShop selezionato non è valido.');
+
+  record.orderId = normalizedOrderId;
+  record.orderReference = String(orderReference || record.orderReference || '').trim();
+  record.orderDate = String(orderDate || record.orderDate || '').trim();
+  record.currentState = String(currentStateName || record.currentState || '—').trim() || '—';
+  record.prestaStateId = String(currentStateId || '').trim();
+  record.existingTracking = String(trackingNumberOnPrestaShop || '').trim();
+  record.prestaCarrierId = String(carrierId || record.prestaCarrierId || '').trim();
+  record.prestaCarrierName = String(carrierName || record.prestaCarrierName || '').trim();
+  record.prestaStatus = 'Ordine collegato manualmente';
+  record.prestaCheckedAt = now();
+  record.linkedManuallyAt = record.prestaCheckedAt;
+  record.lastSeenAt = record.prestaCheckedAt;
+  const orderLabel = record.orderReference || normalizedOrderId;
+  addEvent(record, 'prestashop', 'Ordine PrestaShop collegato', `Ordine ${orderLabel} · ID ${normalizedOrderId}`);
+  await persist();
+  return { ...record, archived: Boolean(record.archived), dsvStatus: normalizeStoredDsvStatus(record.dsvStatus), operationalStatus: operationalStatus(record) };
+}
+
 export async function getControlCenter({ query = '', status = '', dsvStatus = '', checkedAfter = '', exceptionOnly = false, archived = false } = {}) {
   const db = await load();
   const needle = String(query).trim().toLocaleLowerCase('it-IT');
@@ -283,6 +317,16 @@ export async function deleteShipment(trackingNumber) {
     delete db.shipments[trackingNumber];
     await persist();
   }
+}
+
+export async function deleteArchivedShipment(trackingNumber) {
+  const db = await load();
+  const record = db.shipments[trackingNumber];
+  if (!record) throw new Error('Spedizione non presente nel centro di controllo.');
+  if (!record.archived) throw new Error('Puoi eliminare definitivamente solo una spedizione già archiviata.');
+  delete db.shipments[trackingNumber];
+  await persist();
+  return { trackingNumber };
 }
 
 export async function exportShipmentsData() {
@@ -443,5 +487,4 @@ export async function getAuditLog({ type = '', query = '', dateFrom = '', dateTo
     events: filtered.slice(0, Math.max(10, Number(limit) || 300)),
   };
 }
-
 

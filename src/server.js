@@ -8,7 +8,7 @@ import { exportSettingsData, loadSettings, normalizeCronSettings, normalizeDsvSt
 import { DEFAULT_DSV_TRACKING_URL, DSV_PARSER_VERSION, DSV_SPEED_PROFILES, DsvBetaClient, normalizeBetaSettings } from './dsv-beta-client.js';
 import { DsvCronService } from './dsv-cron.js';
 import { NotificationService } from './notification-service.js';
-import { archiveShipment, exportShipmentsData, getAuditLog, getControlCenter, getExistingShipmentsIndex, getImportBatches, getShipment, registerImportBatch, restoreShipmentsData, syncAppliedShipments, syncDsvShipments, syncManualPrestaShopState, syncShipmentPrestaShopShipping, syncVerifiedShipments, updateShipmentCase } from './shipment-store.js';
+import { archiveShipment, deleteArchivedShipment, exportShipmentsData, getAuditLog, getControlCenter, getExistingShipmentsIndex, getImportBatches, getShipment, linkShipmentToPrestaShopOrder, registerImportBatch, restoreShipmentsData, syncAppliedShipments, syncDsvShipments, syncManualPrestaShopState, syncShipmentPrestaShopShipping, syncVerifiedShipments, updateShipmentCase } from './shipment-store.js';
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
@@ -521,11 +521,79 @@ app.get('/api/control-center/:trackingNumber', async (req, res) => {
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
+async function resolvePrestaShopLinkCandidate(shop, shipment, rawQuery) {
+  const query = String(rawQuery || '').trim();
+  if (!query) throw new Error('Inserisci un ID ordine o un riferimento PrestaShop.');
+  if (query.length > 120) throw new Error('Il riferimento inserito è troppo lungo.');
+  const lookup = /^\d+$/.test(query)
+    ? { orderId: query, orderReference: '' }
+    : { orderId: '', orderReference: query };
+  const live = await shop.getOrderLiveShippingInfo(lookup);
+  if (live.status !== 'ok') throw new Error(live.error || 'Ordine non trovato su PrestaShop.');
+
+  const states = await shop.listOrderStates().catch(() => []);
+  const currentState = states.find((state) => String(state.id) === String(live.currentStateId || ''));
+  const localTracking = String(shipment.trackingNumber || '').trim();
+  const remoteTracking = String(live.trackingNumber || '').trim();
+  const trackingMatches = Boolean(remoteTracking) && remoteTracking.toLocaleLowerCase('it-IT') === localTracking.toLocaleLowerCase('it-IT');
+
+  return {
+    orderId: live.orderId,
+    orderReference: live.orderReference,
+    orderDate: live.orderDate || '',
+    currentStateId: live.currentStateId || '',
+    currentStateName: currentState?.name || '',
+    trackingNumber: remoteTracking,
+    carrierId: live.carrierId || '',
+    carrierName: live.carrierName || '',
+    trackingMatches,
+    trackingConflict: Boolean(remoteTracking) && !trackingMatches,
+  };
+}
+
 app.post('/api/control-center/:trackingNumber/archive', async (req, res) => {
   try {
     const archived = req.body?.archived !== undefined ? Boolean(req.body.archived) : true;
     const shipment = await archiveShipment(req.params.trackingNumber, archived);
     res.json({ shipment, message: archived ? 'Spedizione archiviata.' : 'Spedizione ripristinata tra le attive.' });
+  } catch (error) { res.status(400).json({ error: error.message }); }
+});
+
+app.delete('/api/control-center/:trackingNumber', async (req, res) => {
+  try {
+    const result = await deleteArchivedShipment(req.params.trackingNumber);
+    res.json({ ...result, message: 'Spedizione archiviata eliminata definitivamente dal tracking center.' });
+  } catch (error) { res.status(400).json({ error: error.message }); }
+});
+
+app.post('/api/control-center/:trackingNumber/prestashop-link/preview', async (req, res) => {
+  try {
+    const shipment = await getShipment(req.params.trackingNumber);
+    if (!shipment) return res.status(404).json({ error: 'Spedizione non presente nel centro di controllo.' });
+    const candidate = await resolvePrestaShopLinkCandidate(client(), shipment, req.body?.query);
+    res.json({ candidate });
+  } catch (error) { res.status(400).json({ error: error.message }); }
+});
+
+app.post('/api/control-center/:trackingNumber/prestashop-link', async (req, res) => {
+  try {
+    const shipment = await getShipment(req.params.trackingNumber);
+    if (!shipment) return res.status(404).json({ error: 'Spedizione non presente nel centro di controllo.' });
+    const candidate = await resolvePrestaShopLinkCandidate(client(), shipment, req.body?.query);
+    if (candidate.trackingConflict && req.body?.allowTrackingMismatch !== true) {
+      throw new Error('Il tracking dell’ordine è diverso. Conferma esplicitamente il collegamento per continuare.');
+    }
+    const linked = await linkShipmentToPrestaShopOrder(req.params.trackingNumber, {
+      orderId: candidate.orderId,
+      orderReference: candidate.orderReference,
+      orderDate: candidate.orderDate,
+      currentStateId: candidate.currentStateId,
+      currentStateName: candidate.currentStateName,
+      trackingNumberOnPrestaShop: candidate.trackingNumber,
+      carrierId: candidate.carrierId,
+      carrierName: candidate.carrierName,
+    });
+    res.json({ shipment: linked, candidate, message: `Spedizione collegata all’ordine ${candidate.orderReference || candidate.orderId}. PrestaShop non è stato modificato.` });
   } catch (error) { res.status(400).json({ error: error.message }); }
 });
 

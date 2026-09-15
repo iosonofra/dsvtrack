@@ -321,6 +321,8 @@ main[data-active-view="control"] .steps, main[data-active-view="exceptions"] .st
 .detail-more-menu button { width: 100%; justify-content: flex-start; gap: 7px; border: 0; background: #fff; color: var(--dsv-navy); }
 .detail-more-menu button:hover { background: var(--dsv-blue-soft); }
 .detail-more-menu button svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.detail-more-menu button.danger-text { margin-top: 4px; border-top: 1px solid var(--line); color: var(--danger); }
+.detail-more-menu button.danger-text:hover { background: var(--danger-soft); }
 .dsv-history { padding: 16px 18px 22px; }
 .detail-dialog-primary .dsv-history { border-top: 0; }
 .dsv-history-empty { display: flex; align-items: center; justify-content: space-between; gap: 12px; background: #f8fafc; }
@@ -397,6 +399,29 @@ main[data-active-view="control"] .steps, main[data-active-view="exceptions"] .st
 .prestashop-state-dialog .message { min-height: 18px; margin: 0; font-size: .72rem; }
 .prestashop-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .prestashop-dialog-actions button { min-height: 36px; padding: 7px 11px; font-size: .73rem; }
+.prestashop-link-dialog { width: min(590px,calc(100vw - 28px)); }
+.prestashop-link-dialog label[for="prestashop-link-query"] { margin-bottom: -9px; color: #435977; font-weight: 750; }
+.prestashop-link-search { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px; }
+.prestashop-link-search input { min-width: 0; min-height: 40px; padding: 8px 10px; font-size: .82rem; }
+.prestashop-link-search button { min-width: 108px; }
+.prestashop-link-candidate { border: 1px solid #a9c3e6; background: #f7faff; }
+.prestashop-link-candidate-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border-bottom: 1px solid #cbd9eb; color: var(--dsv-navy); font-size: .76rem; }
+.prestashop-link-candidate dl { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); margin: 0; }
+.prestashop-link-candidate dl > div { min-width: 0; padding: 9px 12px; border-bottom: 1px solid #dce5f1; }
+.prestashop-link-candidate dl > div:nth-child(odd) { border-right: 1px solid #dce5f1; }
+.prestashop-link-candidate dl > div:last-child { grid-column: 1 / -1; border-right: 0; border-bottom: 0; }
+.prestashop-link-candidate dt { color: var(--muted); font-size: .62rem; font-weight: 760; text-transform: uppercase; letter-spacing: .035em; }
+.prestashop-link-candidate dd { margin: 3px 0 0; overflow-wrap: anywhere; color: var(--ink); font-size: .76rem; font-weight: 700; }
+.link-check-status { flex: 0 0 auto; padding: 3px 6px; border: 1px solid var(--line); font-size: .62rem; font-weight: 800; }
+.link-check-status.match { border-color: #a9d8ba; background: var(--success-soft); color: #13753f; }
+.link-check-status.conflict { border-color: #e9b9b9; background: var(--danger-soft); color: #a72e38; }
+.link-check-status.neutral { background: #edf2f8; color: #53657c; }
+.prestashop-link-mismatch { display: grid !important; grid-template-columns: auto minmax(0,1fr); align-items: start; gap: 8px !important; padding: 10px 11px; border: 1px solid #e9b9b9; background: var(--danger-soft); color: #7c2931; line-height: 1.4; }
+.prestashop-link-mismatch input { margin-top: 2px; }
+.delete-shipment-description { margin: 0; color: var(--ink); font-size: .8rem; line-height: 1.5; }
+.delete-shipment-warning { margin: 0; padding: 10px 11px; border: 1px solid #e9b9b9; background: var(--danger-soft); color: #7c2931; font-size: .72rem; line-height: 1.45; }
+.danger-button { border-color: #b8323f !important; background: #b8323f !important; color: #fff !important; }
+.danger-button:hover { background: #982733 !important; }
 
 .prestashop-state-dialog [hidden] {
   display: none !important;
@@ -2108,6 +2133,7 @@ main[data-active-view="control"] .steps, main[data-active-view="exceptions"] .st
 }
 
 .detail-dialog-operations .sync-actions-row {
+  flex-direction: column;
   align-items: stretch;
 }
 

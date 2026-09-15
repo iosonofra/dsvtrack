@@ -17,6 +17,8 @@ let controlDetailRequestToken = 0;
 let shipmentDetailDirty = false;
 let prestaShopStateCatalog = null;
 let prestaShopStateTracking = '';
+let prestaShopLinkTracking = '';
+let prestaShopLinkCandidate = null;
 let dsvStateMappings = {};
 let lastVerificationReport = null;
 let activeReportFilter = 'all';
@@ -1741,6 +1743,31 @@ function setupControlWorkspace() {
     }
   });
   document.body.insertAdjacentHTML('beforeend', '<dialog id="prestashop-state-dialog" class="prestashop-state-dialog" aria-labelledby="prestashop-state-title"><div id="prestashop-state-form-wrap"><form id="prestashop-state-form"><div class="prestashop-dialog-heading"><div><span>Aggiornamento ordine</span><h3 id="prestashop-state-title">Allinea stato PrestaShop</h3></div><button id="close-prestashop-state" type="button" class="detail-close" aria-label="Chiudi"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg></button></div><div id="prestashop-state-comparison" class="prestashop-state-comparison"></div><label>Nuovo stato PrestaShop<select id="prestashop-target-state" required><option value="">Caricamento stati…</option></select></label><p class="prestashop-dialog-note">Verrà creato un nuovo evento nello storico dell’ordine. L’email al cliente resterà disattivata.</p><p id="prestashop-state-message" class="message" aria-live="polite"></p><div class="prestashop-dialog-actions"><button id="cancel-prestashop-state" type="button" class="secondary">Annulla</button><button id="confirm-prestashop-state" type="submit">Aggiorna PrestaShop</button></div></form></div><div id="prestashop-state-success-wrap" class="prestashop-state-success-card" hidden><div class="prestashop-success-icon-ring"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg></div><div class="prestashop-success-content"><span class="prestashop-success-eyebrow">Operazione completata</span><h3 class="prestashop-success-title">Stato PrestaShop aggiornato!</h3><div id="prestashop-success-badge-slot" class="prestashop-success-badge-slot"></div><p id="prestashop-success-desc" class="prestashop-success-desc"></p></div><div class="prestashop-timer-bar-track"><div id="prestashop-timer-bar-fill" class="prestashop-timer-bar-fill"></div></div><div class="prestashop-dialog-actions prestashop-success-actions"><button id="prestashop-success-close-btn" type="button" class="secondary prestashop-quick-close">Chiudi subito</button></div></div></dialog><dialog id="prestashop-bulk-dialog" class="prestashop-state-dialog prestashop-bulk-dialog" aria-labelledby="prestashop-bulk-title"><div id="prestashop-bulk-form-wrap" class="prestashop-bulk-form-wrap"><div class="prestashop-dialog-heading"><div><span>Aggiornamento massivo ordini</span><h3 id="prestashop-bulk-title">Allinea stati PrestaShop</h3></div><button id="close-prestashop-bulk" type="button" class="detail-close" aria-label="Chiudi"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg></button></div><label class="prestashop-bulk-select-label">Modalità di allineamento stato PrestaShop<select id="prestashop-bulk-state-select" class="prestashop-bulk-state-select"><option value="auto">⚡ Mappatura automatica DSV (consigliata)</option><optgroup id="prestashop-bulk-forced-group" label="Oppure forza uno stato PrestaShop per tutte"></optgroup></select></label><div id="prestashop-bulk-forced-notice" class="prestashop-bulk-forced-notice" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x2="12.01" y1="17" y2="17"/></svg><span><strong>Modalità forzata:</strong> le regole basate sullo stato DSV vengono ignorate. Tutte le spedizioni con ordine verranno impostate sullo stato selezionato.</span></div><div id="prestashop-bulk-preview-content"></div><p class="prestashop-dialog-note">Come per l’aggiornamento singolo, verrà creato un nuovo evento nello storico di ciascun ordine. L’email al cliente resterà disattivata.</p><p id="prestashop-bulk-message" class="message" aria-live="polite"></p><div class="prestashop-dialog-actions"><button id="cancel-prestashop-bulk" type="button" class="secondary">Annulla</button><button id="confirm-prestashop-bulk" type="button">Conferma allineamento</button></div></div><div id="prestashop-bulk-progress-wrap" class="prestashop-bulk-progress-wrap" hidden><svg class="prestashop-bulk-progress-spinner" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"></circle><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"></path></svg><h3 class="prestashop-bulk-progress-title">Allineamento PrestaShop in corso…</h3><div class="prestashop-bulk-progress-bar-wrap"><div class="prestashop-bulk-progress-labels"><span id="prestashop-bulk-progress-text">0 di 0</span><span id="prestashop-bulk-progress-percent">0%</span></div><div class="prestashop-bulk-progress-track"><div id="prestashop-bulk-progress-bar" class="prestashop-bulk-progress-bar"></div></div></div><p id="prestashop-bulk-progress-info" class="prestashop-bulk-progress-info">Preparazione aggiornamenti…</p></div><div id="prestashop-bulk-success-wrap" class="prestashop-state-success-card" hidden><div class="prestashop-success-icon-ring"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg></div><div class="prestashop-success-content"><span class="prestashop-success-eyebrow">Operazione completata</span><h3 class="prestashop-success-title" id="prestashop-bulk-success-title">Allineamento completato!</h3><p id="prestashop-bulk-success-desc" class="prestashop-success-desc"></p><div id="prestashop-bulk-errors-box" class="prestashop-bulk-errors" hidden></div></div><div class="prestashop-timer-bar-track"><div id="prestashop-bulk-timer-bar-fill" class="prestashop-timer-bar-fill"></div></div><div class="prestashop-dialog-actions prestashop-success-actions"><button id="prestashop-bulk-success-close-btn" type="button" class="secondary prestashop-quick-close">Chiudi subito</button></div></div></dialog>');
+  document.body.insertAdjacentHTML('beforeend', `
+    <dialog id="prestashop-link-dialog" class="prestashop-state-dialog prestashop-link-dialog" aria-labelledby="prestashop-link-title">
+      <form id="prestashop-link-form">
+        <div class="prestashop-dialog-heading">
+          <div><span>Associazione locale</span><h3 id="prestashop-link-title">Collega ordine PrestaShop</h3></div>
+          <button id="close-prestashop-link" type="button" class="detail-close" aria-label="Chiudi"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg></button>
+        </div>
+        <p class="prestashop-dialog-note">Cerca l’ordine tramite ID o riferimento. Il collegamento aggiorna solo il tracking center: nessun dato verrà scritto su PrestaShop.</p>
+        <label for="prestashop-link-query">ID ordine o riferimento PrestaShop</label>
+        <div class="prestashop-link-search"><input id="prestashop-link-query" maxlength="120" autocomplete="off" required placeholder="Es. 216503 oppure OSFYILXVG"><button id="preview-prestashop-link" type="submit">Cerca ordine</button></div>
+        <p id="prestashop-link-message" class="message" role="status" aria-live="polite"></p>
+        <div id="prestashop-link-candidate" class="prestashop-link-candidate" hidden></div>
+        <label id="prestashop-link-mismatch-wrap" class="prestashop-link-mismatch" hidden><input id="prestashop-link-mismatch" type="checkbox"><span>Ho verificato che il tracking diverso appartiene comunque a questo ordine.</span></label>
+        <div class="prestashop-dialog-actions"><button id="cancel-prestashop-link" type="button" class="secondary">Annulla</button><button id="confirm-prestashop-link" type="button" disabled>Collega ordine</button></div>
+      </form>
+    </dialog>
+    <dialog id="delete-shipment-dialog" class="prestashop-state-dialog delete-shipment-dialog" aria-labelledby="delete-shipment-title">
+      <form method="dialog">
+        <div class="prestashop-dialog-heading"><div><span>Operazione irreversibile</span><h3 id="delete-shipment-title">Elimina spedizione archiviata</h3></div><button id="close-delete-shipment" type="button" class="detail-close" aria-label="Chiudi"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg></button></div>
+        <p id="delete-shipment-description" class="delete-shipment-description"></p>
+        <p class="delete-shipment-warning">Saranno rimossi dal database locale stato, storico DSV e attività interna. PrestaShop non verrà modificato.</p>
+        <p id="delete-shipment-message" class="message" role="status" aria-live="polite"></p>
+        <div class="prestashop-dialog-actions"><button id="cancel-delete-shipment" type="button" class="secondary">Annulla</button><button id="confirm-delete-shipment" type="button" class="danger-button">Elimina definitivamente</button></div>
+      </form>
+    </dialog>`);
   
   $('#prestashop-success-close-btn')?.insertAdjacentHTML('afterend', '<button id="prestashop-success-next-btn" type="button" hidden>Prossima da gestire</button>');
   const prestashopDialog = $('#prestashop-state-dialog');
@@ -1762,6 +1789,23 @@ function setupControlWorkspace() {
     }
   });
   $('#prestashop-state-form').addEventListener('submit', updatePrestaShopState);
+
+  const prestashopLinkDialog = $('#prestashop-link-dialog');
+  const closePrestaShopLinkDialog = () => prestashopLinkDialog?.close();
+  $('#close-prestashop-link')?.addEventListener('click', closePrestaShopLinkDialog);
+  $('#cancel-prestashop-link')?.addEventListener('click', closePrestaShopLinkDialog);
+  prestashopLinkDialog?.addEventListener('cancel', closePrestaShopLinkDialog);
+  $('#prestashop-link-form')?.addEventListener('submit', previewPrestaShopOrderLink);
+  $('#prestashop-link-query')?.addEventListener('input', resetPrestaShopLinkPreview);
+  $('#prestashop-link-mismatch')?.addEventListener('change', updatePrestaShopLinkConfirmation);
+  $('#confirm-prestashop-link')?.addEventListener('click', confirmPrestaShopOrderLink);
+
+  const deleteShipmentDialog = $('#delete-shipment-dialog');
+  const closeDeleteShipmentDialog = () => deleteShipmentDialog?.close();
+  $('#close-delete-shipment')?.addEventListener('click', closeDeleteShipmentDialog);
+  $('#cancel-delete-shipment')?.addEventListener('click', closeDeleteShipmentDialog);
+  deleteShipmentDialog?.addEventListener('cancel', closeDeleteShipmentDialog);
+  $('#confirm-delete-shipment')?.addEventListener('click', deleteArchivedShipmentFromControl);
 
   const prestashopBulkDialog = $('#prestashop-bulk-dialog');
   const closePrestaShopBulkDialog = () => {
@@ -1888,6 +1932,137 @@ function nextAttentionTracking(trackingNumber) {
     if (row.operationalStatus === 'Da gestire' || (row.orderId && !isPrestaShopStateAligned(row))) return row.trackingNumber;
   }
   return '';
+}
+
+function resetPrestaShopLinkPreview() {
+  prestaShopLinkCandidate = null;
+  const candidate = $('#prestashop-link-candidate');
+  if (candidate) {
+    candidate.hidden = true;
+    candidate.innerHTML = '';
+  }
+  $('#prestashop-link-mismatch-wrap').hidden = true;
+  $('#prestashop-link-mismatch').checked = false;
+  $('#confirm-prestashop-link').disabled = true;
+  $('#prestashop-link-message').textContent = '';
+  $('#prestashop-link-message').className = 'message';
+}
+
+function updatePrestaShopLinkConfirmation() {
+  const needsAcknowledgement = Boolean(prestaShopLinkCandidate?.trackingConflict);
+  $('#confirm-prestashop-link').disabled = !prestaShopLinkCandidate || (needsAcknowledgement && !$('#prestashop-link-mismatch').checked);
+}
+
+function openPrestaShopLinkDialog(shipment, initialQuery = '') {
+  prestaShopLinkTracking = shipment.trackingNumber;
+  resetPrestaShopLinkPreview();
+  const query = String(initialQuery || shipment.orderReference || '').trim();
+  $('#prestashop-link-query').value = query;
+  $('#prestashop-link-dialog').showModal();
+  setTimeout(() => $('#prestashop-link-query').focus(), 0);
+}
+
+async function previewPrestaShopOrderLink(event) {
+  event.preventDefault();
+  if (!prestaShopLinkTracking) return;
+  resetPrestaShopLinkPreview();
+  const button = $('#preview-prestashop-link');
+  const query = $('#prestashop-link-query').value.trim();
+  if (!query) return;
+  button.disabled = true;
+  button.textContent = 'Ricerca…';
+  $('#prestashop-link-message').textContent = 'Verifica dell’ordine su PrestaShop in corso…';
+  try {
+    const result = await request(`/api/control-center/${encodeURIComponent(prestaShopLinkTracking)}/prestashop-link/preview`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query }),
+    });
+    prestaShopLinkCandidate = result.candidate;
+    const candidate = result.candidate;
+    const trackingLabel = candidate.trackingNumber || 'Nessun tracking registrato';
+    const trackingStatus = candidate.trackingConflict
+      ? '<span class="link-check-status conflict">Tracking diverso</span>'
+      : candidate.trackingMatches
+        ? '<span class="link-check-status match">Tracking corrispondente</span>'
+        : '<span class="link-check-status neutral">Tracking assente</span>';
+    const candidatePanel = $('#prestashop-link-candidate');
+    candidatePanel.innerHTML = `<div class="prestashop-link-candidate-heading"><strong>Ordine trovato</strong>${trackingStatus}</div><dl><div><dt>Riferimento</dt><dd>${escapeHtml(candidate.orderReference || '—')}</dd></div><div><dt>ID ordine</dt><dd>${escapeHtml(candidate.orderId)}</dd></div><div><dt>Stato PrestaShop</dt><dd>${escapeHtml(candidate.currentStateName || 'Non disponibile')}</dd></div><div><dt>Tracking associato</dt><dd>${escapeHtml(trackingLabel)}</dd></div><div><dt>Corriere</dt><dd>${escapeHtml(candidate.carrierName || 'Non assegnato')}</dd></div></dl>`;
+    candidatePanel.hidden = false;
+    $('#prestashop-link-mismatch-wrap').hidden = !candidate.trackingConflict;
+    $('#prestashop-link-message').textContent = candidate.trackingConflict
+      ? 'Il tracking dell’ordine è diverso: verifica l’associazione prima di confermare.'
+      : 'Ordine verificato. Puoi registrare il collegamento locale.';
+    $('#prestashop-link-message').className = `message ${candidate.trackingConflict ? 'error' : 'success'}`;
+    updatePrestaShopLinkConfirmation();
+  } catch (error) {
+    $('#prestashop-link-message').textContent = `${error.message} Controlla ID o riferimento e riprova.`;
+    $('#prestashop-link-message').className = 'message error';
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Cerca ordine';
+  }
+}
+
+async function confirmPrestaShopOrderLink() {
+  if (!prestaShopLinkCandidate || !prestaShopLinkTracking) return;
+  const button = $('#confirm-prestashop-link');
+  button.disabled = true;
+  button.textContent = 'Collegamento…';
+  try {
+    const result = await request(`/api/control-center/${encodeURIComponent(prestaShopLinkTracking)}/prestashop-link`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        query: $('#prestashop-link-query').value.trim(),
+        allowTrackingMismatch: $('#prestashop-link-mismatch').checked,
+      }),
+    });
+    const tracking = prestaShopLinkTracking;
+    $('#prestashop-link-dialog').close();
+    showFloatingToast(result.message, 'success');
+    await refreshControlCenter();
+    await openShipmentDetail(tracking, { message: result.message, kind: 'success' });
+  } catch (error) {
+    $('#prestashop-link-message').textContent = error.message;
+    $('#prestashop-link-message').className = 'message error';
+    updatePrestaShopLinkConfirmation();
+  } finally {
+    button.textContent = 'Collega ordine';
+  }
+}
+
+function openDeleteShipmentDialog(shipment) {
+  if (!shipment.archived) return;
+  const dialog = $('#delete-shipment-dialog');
+  dialog.dataset.tracking = shipment.trackingNumber;
+  $('#delete-shipment-description').innerHTML = `Stai per eliminare definitivamente la spedizione <strong>${escapeHtml(shipment.trackingNumber)}</strong>.`;
+  $('#delete-shipment-message').textContent = '';
+  $('#delete-shipment-message').className = 'message';
+  $('#confirm-delete-shipment').disabled = false;
+  dialog.showModal();
+}
+
+async function deleteArchivedShipmentFromControl() {
+  const dialog = $('#delete-shipment-dialog');
+  const tracking = dialog.dataset.tracking;
+  if (!tracking) return;
+  const button = $('#confirm-delete-shipment');
+  button.disabled = true;
+  button.textContent = 'Eliminazione…';
+  try {
+    const result = await request(`/api/control-center/${encodeURIComponent(tracking)}`, { method: 'DELETE' });
+    dialog.close();
+    closeControlDetail({ force: true });
+    await refreshControlCenter();
+    showFloatingToast(result.message, 'success');
+  } catch (error) {
+    $('#delete-shipment-message').textContent = error.message;
+    $('#delete-shipment-message').className = 'message error';
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Elimina definitivamente';
+  }
 }
 
 async function openPrestaShopStateDialog(trackingNumber) {
@@ -2870,10 +3045,12 @@ function renderShipmentAlignment(shipment, mappedState) {
       ? `Stato previsto: ${mappedState.stateName}`
       : hasOrder ? 'Scegli lo stato PrestaShop corretto' : 'Nessun ordine associato alla spedizione';
   if (isStale) resultHint += ' · Verifica DSV consigliata';
-  const mappingAction = hasOrder && !mappedState
-    ? '<button id="configure-detail-state-mapping" type="button" class="alignment-text-action">Configura mappatura</button>'
-    : '';
-  return `<section class="shipment-alignment ${resultKind}${isStale ? ' stale' : ''}" aria-labelledby="shipment-alignment-title"><div class="alignment-state"><span class="alignment-label" id="shipment-alignment-title">Stato DSV</span>${dsvBadge(shipment.dsvStatus)}<small>Evento: ${displayDsvEventDate(shipment)}${eventAge ? ` · ${escapeHtml(eventAge)}` : ''}</small></div><div class="alignment-direction" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12h14M14 7l5 5-5 5"/></svg></div><div class="alignment-state"><span class="alignment-label">Stato PrestaShop</span>${prestaShopBadge(shipment.currentState)}<small>${escapeHtml(shipment.orderId ? `Ordine ${shipment.orderReference || shipment.orderId}` : 'Ordine non collegato')}</small></div><div class="alignment-outcome"><span class="alignment-label">Allineamento</span><span class="alignment-result ${resultKind}"><span class="status-dot" aria-hidden="true"></span>${escapeHtml(resultLabel)}</span><small>${escapeHtml(resultHint)}</small>${mappingAction}</div></section>`;
+  const alignmentAction = !hasOrder
+    ? '<button id="link-detail-prestashop-order" type="button" class="alignment-text-action">Collega ordine</button>'
+    : !mappedState
+      ? '<button id="configure-detail-state-mapping" type="button" class="alignment-text-action">Configura mappatura</button>'
+      : '';
+  return `<section class="shipment-alignment ${resultKind}${isStale ? ' stale' : ''}" aria-labelledby="shipment-alignment-title"><div class="alignment-state"><span class="alignment-label" id="shipment-alignment-title">Stato DSV</span>${dsvBadge(shipment.dsvStatus)}<small>Evento: ${displayDsvEventDate(shipment)}${eventAge ? ` · ${escapeHtml(eventAge)}` : ''}</small></div><div class="alignment-direction" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12h14M14 7l5 5-5 5"/></svg></div><div class="alignment-state"><span class="alignment-label">Stato PrestaShop</span>${prestaShopBadge(shipment.currentState)}<small>${escapeHtml(shipment.orderId ? `Ordine ${shipment.orderReference || shipment.orderId}` : 'Ordine non collegato')}</small></div><div class="alignment-outcome"><span class="alignment-label">Allineamento</span><span class="alignment-result ${resultKind}"><span class="status-dot" aria-hidden="true"></span>${escapeHtml(resultLabel)}</span><small>${escapeHtml(resultHint)}</small>${alignmentAction}</div></section>`;
 }
 
 function renderShipmentCaseManagement(shipment) {
@@ -2922,8 +3099,11 @@ async function openShipmentDetail(trackingNumber, feedback = null) {
     const archiveAction = shipment.archived
       ? '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 5.5h12v8.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5.5zM1 2.5h14v3H1zM6 9.5l2-2 2 2M8 7.5v5"/></svg><span>Ripristina spedizione</span>'
       : '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 5.5h12v8.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5.5zM1 2.5h14v3H1zM6 9.5h4"/></svg><span>Archivia spedizione</span>';
+    const deleteAction = shipment.archived
+      ? '<button id="delete-archived-shipment" type="button" class="danger-text"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4h11M6 4V2.5h4V4m-6 0 .6 10h6.8L12 4M6.5 6.5v5M9.5 6.5v5"/></svg><span>Elimina definitivamente</span></button>'
+      : '';
 
-    panel.innerHTML = `<div class="detail-heading"><div><h2 id="shipment-detail-title" class="detail-title-row">${copyableValue(shipment.trackingNumber, 'Numero spedizione', 'detail-tracking-btn')}</h2><span class="detail-order">Ordine ${copyableValue(shipment.orderReference, 'Riferimento ordine', 'detail-order-btn')}${shipment.archived ? '<span class="detail-archived-label">Archiviata</span>' : ''}</span></div><button id="close-shipment-detail" type="button" class="detail-close" aria-label="Chiudi dettaglio"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg></button></div>${renderShipmentAlignment(shipment, mappedState)}<div id="shipment-detail-feedback" class="detail-feedback" role="status" aria-live="polite" hidden></div><div class="detail-dialog-body"><div class="detail-dialog-primary">${renderShipmentDsvTimeline(dsvTimeline, trackingUrl)}</div><aside class="detail-dialog-operations" aria-label="Gestione operativa"><dl class="detail-operations-summary"><div><dt>Ultimo controllo</dt><dd>${displayDateTime(shipment.dsvCheckedAt || shipment.lastSeenAt)}</dd></div><div><dt>Gestione</dt><dd>${caseBadge(shipment.caseStatus)}</dd></div><div><dt>Assegnata a</dt><dd>${escapeHtml(shipment.assignee || 'Non assegnata')}</dd></div></dl><div id="detail-prestashop-sync" class="detail-prestashop-sync-card"><div class="sync-loading-skeleton" role="status"><span class="sync-live-dot loading" aria-hidden="true"></span><span>Verifica collegamento PrestaShop…</span></div></div>${renderShipmentCaseManagement(shipment)}${renderShipmentLocalActivity(shipment)}</aside></div><div class="detail-actions"><div class="detail-actions-main">${updateAction}<button id="verify-single-dsv" type="button" class="${canUpdateOrderState ? 'secondary' : ''}" ${dsvBetaSettings?.enabled ? '' : 'disabled'}>${shipment.archived ? 'Forza verifica DSV' : 'Verifica DSV'}</button><a class="dsv-external-link" href="${escapeHtml(trackingUrl)}" target="_blank" rel="noopener noreferrer">Apri su DSV <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 5h9v9M19 5l-9 9M14 19H5V10"/></svg></a></div><details class="detail-more-menu"><summary aria-label="Altre azioni"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg></summary><div><button id="toggle-archive-shipment" type="button" title="${shipment.archived ? 'Ripristina tra le spedizioni attive' : 'Archivia la spedizione per escluderla dai controlli automatici'}">${archiveAction}</button></div></details></div>`;
+    panel.innerHTML = `<div class="detail-heading"><div><h2 id="shipment-detail-title" class="detail-title-row">${copyableValue(shipment.trackingNumber, 'Numero spedizione', 'detail-tracking-btn')}</h2><span class="detail-order">Ordine ${copyableValue(shipment.orderReference, 'Riferimento ordine', 'detail-order-btn')}${shipment.archived ? '<span class="detail-archived-label">Archiviata</span>' : ''}</span></div><button id="close-shipment-detail" type="button" class="detail-close" aria-label="Chiudi dettaglio"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg></button></div>${renderShipmentAlignment(shipment, mappedState)}<div id="shipment-detail-feedback" class="detail-feedback" role="status" aria-live="polite" hidden></div><div class="detail-dialog-body"><div class="detail-dialog-primary">${renderShipmentDsvTimeline(dsvTimeline, trackingUrl)}</div><aside class="detail-dialog-operations" aria-label="Gestione operativa"><dl class="detail-operations-summary"><div><dt>Ultimo controllo</dt><dd>${displayDateTime(shipment.dsvCheckedAt || shipment.lastSeenAt)}</dd></div><div><dt>Gestione</dt><dd>${caseBadge(shipment.caseStatus)}</dd></div><div><dt>Assegnata a</dt><dd>${escapeHtml(shipment.assignee || 'Non assegnata')}</dd></div></dl><div id="detail-prestashop-sync" class="detail-prestashop-sync-card"><div class="sync-loading-skeleton" role="status"><span class="sync-live-dot loading" aria-hidden="true"></span><span>Verifica collegamento PrestaShop…</span></div></div>${renderShipmentCaseManagement(shipment)}${renderShipmentLocalActivity(shipment)}</aside></div><div class="detail-actions"><div class="detail-actions-main">${updateAction}<button id="verify-single-dsv" type="button" class="${canUpdateOrderState ? 'secondary' : ''}" ${dsvBetaSettings?.enabled ? '' : 'disabled'}>${shipment.archived ? 'Forza verifica DSV' : 'Verifica DSV'}</button><a class="dsv-external-link" href="${escapeHtml(trackingUrl)}" target="_blank" rel="noopener noreferrer">Apri su DSV <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 5h9v9M19 5l-9 9M14 19H5V10"/></svg></a></div><details class="detail-more-menu"><summary aria-label="Altre azioni"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg></summary><div><button id="toggle-archive-shipment" type="button" title="${shipment.archived ? 'Ripristina tra le spedizioni attive' : 'Archivia la spedizione per escluderla dai controlli automatici'}">${archiveAction}</button>${deleteAction}</div></details></div>`;
     const closeButton = panel.querySelector('#close-shipment-detail');
     closeButton.insertAdjacentHTML('beforebegin', `<nav class="detail-record-navigation" aria-label="Navigazione spedizioni nella pagina"><button id="shipment-detail-previous" type="button" aria-label="Spedizione precedente, scorciatoia K" aria-keyshortcuts="K"${navigation.previous ? '' : ' disabled'}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg></button><span>${navigation.index >= 0 ? navigation.index + 1 : '—'} di ${navigation.total}</span><button id="shipment-detail-next" type="button" aria-label="Spedizione successiva, scorciatoia J" aria-keyshortcuts="J"${navigation.next ? '' : ' disabled'}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 6 6 6-6 6"/></svg></button></nav>`);
     const lastCheckValue = panel.querySelector('.detail-operations-summary dd');
@@ -2948,6 +3128,7 @@ async function openShipmentDetail(trackingNumber, feedback = null) {
       location.hash = 'settings';
       setTimeout(() => $('#state-mapping-view')?.scrollIntoView({ block: 'start', behavior: 'smooth' }), 120);
     });
+    $('#link-detail-prestashop-order')?.addEventListener('click', () => openPrestaShopLinkDialog(shipment));
     $('#update-detail-prestashop-state')?.addEventListener('click', () => {
       if (allowShipmentDetailRefresh()) openPrestaShopStateDialog(shipment.trackingNumber);
     });
@@ -2978,6 +3159,7 @@ async function openShipmentDetail(trackingNumber, feedback = null) {
         button.disabled = false;
       }
     });
+    $('#delete-archived-shipment')?.addEventListener('click', () => openDeleteShipmentDialog(shipment));
     caseForm.addEventListener('input', () => {
       shipmentDetailDirty = true;
       caseSaveButton.disabled = false;
@@ -3022,7 +3204,7 @@ async function loadPrestaShopLiveSync(shipment, requestToken) {
       return;
     }
 
-    const { liveTracking, dsvTracking, trackingStatus, liveCarrierName, defaultCarrierId, defaultCarrierName, carrierMatches } = res;
+    const { orderReference, liveTracking, dsvTracking, trackingStatus, liveCarrierName, defaultCarrierId, defaultCarrierName, carrierMatches } = res;
 
     let badgeHtml = '';
     if (trackingStatus === 'matches') {
@@ -3043,6 +3225,9 @@ async function loadPrestaShopLiveSync(shipment, requestToken) {
     } else if (trackingStatus === 'differs') {
       actionHtml = `<button id="sync-prestashop-btn" type="button" class="sync-action-btn warning" data-overwrite="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg><span>Sovrascrivi tracking con ${escapeHtml(dsvTracking)}</span></button>`;
     }
+    const linkOrderHtml = !shipment.orderId
+      ? `<button id="link-live-prestashop-order" type="button" class="sync-action-btn primary"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.5 9.5 9.5 6.5M5 11l-1 1a2.1 2.1 0 0 1-3-3l3-3a2.1 2.1 0 0 1 3 0M11 5l1-1a2.1 2.1 0 0 1 3 3l-3 3a2.1 2.1 0 0 1-3 0"/></svg><span>Registra collegamento all’ordine ${escapeHtml(orderReference || res.orderId)}</span></button>`
+      : '';
 
     container.innerHTML = `
       <div class="sync-card-header">
@@ -3066,6 +3251,7 @@ async function loadPrestaShopLiveSync(shipment, requestToken) {
         </div>
       </div>
       <div class="sync-actions-row">
+        ${linkOrderHtml}
         ${actionHtml}
       </div>
     `;
@@ -3074,6 +3260,7 @@ async function loadPrestaShopLiveSync(shipment, requestToken) {
       $('#refresh-prestashop-live-btn').classList.add('spinning');
       loadPrestaShopLiveSync(shipment, requestToken);
     });
+    $('#link-live-prestashop-order')?.addEventListener('click', () => openPrestaShopLinkDialog(shipment, orderReference || res.orderId));
 
     const syncBtn = $('#sync-prestashop-btn');
     if (syncBtn) {

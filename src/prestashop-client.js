@@ -308,6 +308,8 @@ export class PrestaShopClient {
       status: 'ok',
       orderId: resolvedOrderId,
       orderReference: String(order.reference || orderReference || ''),
+      orderDate: String(order.date_add || ''),
+      currentStateId: String(order.current_state || ''),
       orderCarrierId: String(shipment.id),
       trackingNumber,
       trackingPresent: Boolean(trackingNumber),
