@@ -7,6 +7,7 @@ let dsvBetaSettings = null;
 let importApplied = false;
 let activeView = 'control';
 let controlSelectedTrackingNumbers = new Set();
+let lastControlSelectedTrackingNumber = '';
 let controlRecords = [];
 let controlPage = 1;
 let controlMetricFilter = 'all';
@@ -27,6 +28,8 @@ let dsvStateMappings = {};
 let lastVerificationReport = null;
 let activeReportFilter = 'all';
 let reportSearchQuery = '';
+let activeControlDsvJobId = '';
+const CONTROL_DSV_JOB_STORAGE_KEY = 'dsv-active-verification';
 
 async function request(url, options) { const r = await fetch(url, options); const data = await r.json(); if (!r.ok) throw new Error(data.error); return data; }
 async function initialConfig() { const config = await request('/api/config'); $('#base-url').value = config.baseUrl; }
@@ -611,7 +614,9 @@ function renderControlCenter(data) {
     const prestaCell = prestaState
       ? `<button type="button" class="control-presta-state-shortcut" data-presta-state-filter="${escapeHtml(prestaState)}" title="Mostra solo gli ordini in stato ${escapeHtml(prestaState)}" aria-label="Filtra per stato PrestaShop: ${escapeHtml(prestaState)}">${prestaShopBadge(prestaState)}</button>`
       : prestaShopBadge(row.currentState);
-    return `<tr data-tracking="${escapeHtml(row.trackingNumber)}" class="${row.trackingNumber === activeControlTrackingNumber ? 'active' : ''}"><td><input class="control-row-select row-select" data-tracking="${escapeHtml(row.trackingNumber)}" type="checkbox" ${controlSelectedTrackingNumbers.has(row.trackingNumber) ? 'checked' : ''} aria-label="Seleziona spedizione ${escapeHtml(row.trackingNumber)}"></td><td>${copyableValue(row.trackingNumber, 'Numero spedizione', 'tracking-val')}</td><td>${copyableValue(row.orderReference, 'Riferimento ordine', 'order-val')}</td><td><div class="dsv-state-cell">${dsvBadge(row.dsvStatus)}${archivedTag}<small title="Data e ora dichiarate da DSV">${displayDsvEventDate(row)}</small></div></td><td>${prestaCell}</td><td><div class="control-alignment-cell">${prestaShopStateAction(row)}</div></td><td><div class="control-check-cell"><span>${displayDateTime(checkedAt)}</span>${checkedAge ? `<small>${escapeHtml(checkedAge)}</small>` : ''}</div></td><td><button class="open-shipment secondary" data-tracking="${escapeHtml(row.trackingNumber)}" aria-label="Apri dettaglio della spedizione ${escapeHtml(row.trackingNumber)}"><span class="sr-only">Dettaglio</span><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5"/></svg></button></td></tr>`;
+    const isSelected = controlSelectedTrackingNumbers.has(row.trackingNumber);
+    const rowClasses = [row.trackingNumber === activeControlTrackingNumber ? 'active' : '', isSelected ? 'is-selected' : ''].filter(Boolean).join(' ');
+    return `<tr data-tracking="${escapeHtml(row.trackingNumber)}" class="${rowClasses}"><td class="control-select-cell"><label class="control-select-target" title="Seleziona ${escapeHtml(row.trackingNumber)}"><input class="control-row-select row-select" data-tracking="${escapeHtml(row.trackingNumber)}" type="checkbox" ${isSelected ? 'checked' : ''} aria-label="Seleziona spedizione ${escapeHtml(row.trackingNumber)}"><span class="sr-only">Seleziona spedizione ${escapeHtml(row.trackingNumber)}</span></label></td><td>${copyableValue(row.trackingNumber, 'Numero spedizione', 'tracking-val')}</td><td>${copyableValue(row.orderReference, 'Riferimento ordine', 'order-val')}</td><td><div class="dsv-state-cell">${dsvBadge(row.dsvStatus)}${archivedTag}<small title="Data e ora dichiarate da DSV">${displayDsvEventDate(row)}</small></div></td><td>${prestaCell}</td><td><div class="control-alignment-cell">${prestaShopStateAction(row)}</div></td><td><div class="control-check-cell"><span>${displayDateTime(checkedAt)}</span>${checkedAge ? `<small>${escapeHtml(checkedAge)}</small>` : ''}</div></td><td><button class="open-shipment secondary" data-tracking="${escapeHtml(row.trackingNumber)}" aria-label="Apri dettaglio della spedizione ${escapeHtml(row.trackingNumber)}"><span class="sr-only">Dettaglio</span><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5"/></svg></button></td></tr>`;
   }).join('') : `<tr><td colspan="8" class="control-empty">${emptyMessage}</td></tr>`;
   updateControlSelectionUi(pageRecords);
   renderControlPager(filteredTotal, totalPages);
@@ -629,28 +634,39 @@ function renderControlPager(total, totalPages) {
 
 function updateControlSelectionUi(records = []) {
   const selected = controlSelectedTrackingNumbers.size;
-  const maxRows = dsvBetaSettings?.maxRows || 10;
+  const maxRows = dsvBetaSettings?.maxRows || 100;
+  const batchSize = dsvBetaSettings?.batchSize || 10;
   const button = $('#verify-control-selected');
-  button.disabled = !dsvBetaSettings?.enabled || selected === 0;
+  button.disabled = !dsvBetaSettings?.enabled || selected === 0 || selected > maxRows || Boolean(activeControlDsvJobId);
   button.textContent = selected ? `Verifica DSV (${selected})` : 'Verifica DSV';
   const bulkBar = $('#control-bulk-bar');
   if (bulkBar) {
     bulkBar.hidden = selected === 0;
-    $('#control-bulk-count').textContent = `${selected} selezionat${selected === 1 ? 'a' : 'e'}`;
+    $('#control-bulk-count').textContent = `${selected} selezionat${selected === 1 ? 'a' : 'e'} su ${records.length} visibili`;
     $('#control-bulk-verify').disabled = button.disabled;
     $('#control-bulk-manage').disabled = selected === 0;
     const bulkSyncBtn = $('#control-bulk-sync-prestashop');
     if (bulkSyncBtn) bulkSyncBtn.disabled = selected === 0;
   }
-  const batchCount = Math.ceil(selected / maxRows);
-  const summary = !dsvBetaSettings?.enabled ? 'Verifica DSV non disponibile: attivala nella Configurazione.' : selected > maxRows ? `${selected} selezionate: saranno verificate automaticamente in ${batchCount} blocchi da massimo ${maxRows}.` : selected ? `${selected} selezionate: la verifica DSV non modifica gli ordini.` : 'Seleziona una o più spedizioni per verificare lo stato DSV.';
+  const batchCount = Math.ceil(selected / batchSize);
+  const summary = !dsvBetaSettings?.enabled
+    ? 'Verifica DSV non disponibile: attivala nella Configurazione.'
+    : activeControlDsvJobId
+      ? 'Verifica già in corso: puoi continuare a usare il tracking center.'
+      : selected > maxRows
+        ? `${selected} selezionate: il limite è ${maxRows} spedizioni per operazione.`
+        : selected
+          ? `${selected} selezionate · un’unica operazione${batchCount > 1 ? ` in ${batchCount} blocchi operativi` : ''}.`
+          : 'Seleziona una o più spedizioni per verificare lo stato DSV.';
   const selectionSummary = $('#control-selection-summary');
   selectionSummary.textContent = summary;
-  selectionSummary.hidden = Boolean(dsvBetaSettings?.enabled) && selected <= maxRows;
+  selectionSummary.hidden = !activeControlDsvJobId && Boolean(dsvBetaSettings?.enabled) && selected === 0;
   const toggle = $('#control-toggle-all');
   const pageSelected = records.filter((record) => controlSelectedTrackingNumbers.has(record.trackingNumber)).length;
   toggle.checked = records.length > 0 && pageSelected === records.length;
   toggle.indeterminate = pageSelected > 0 && pageSelected < records.length;
+  toggle.setAttribute('aria-label', `Seleziona tutte le ${records.length} spedizioni visibili`);
+  toggle.closest('label')?.setAttribute('title', `Seleziona tutte le ${records.length} righe della pagina`);
 }
 
 function formatControlProgressDuration(milliseconds) {
@@ -675,15 +691,15 @@ function ensureControlDsvProgressUi() {
   track.setAttribute('aria-labelledby', title.id);
   track.setAttribute('aria-valuemin', '0');
   track.insertAdjacentHTML('beforebegin', '<div class="control-progress-current"><span id="control-dsv-progress-phase">Preparazione Camoufox</span><span id="control-dsv-progress-tracking" hidden></span></div>');
-  track.insertAdjacentHTML('afterend', '<div class="control-progress-meta"><span id="control-dsv-progress-mode"></span><span id="control-dsv-progress-batch" hidden></span><span id="control-dsv-progress-elapsed"></span><span id="control-dsv-progress-eta" hidden></span><span id="control-dsv-progress-counts" hidden></span><span id="control-dsv-progress-outcome" hidden></span></div>');
+  track.insertAdjacentHTML('afterend', '<div class="control-progress-footer"><div class="control-progress-meta"><span id="control-dsv-progress-mode"></span><span id="control-dsv-progress-batch" hidden></span><span id="control-dsv-progress-elapsed"></span><span id="control-dsv-progress-eta" hidden></span><span id="control-dsv-progress-counts" hidden></span><span id="control-dsv-progress-outcome" hidden></span></div><button id="control-dsv-cancel" type="button" class="secondary" hidden>Interrompi dopo questa spedizione</button></div><span id="control-dsv-progress-live" class="sr-only" role="status" aria-live="polite"></span>');
+  $('#control-dsv-cancel')?.addEventListener('click', cancelControlDsvVerification);
   return container;
 }
 
 function updateControlDsvProgress(progress, context = {}) {
   const container = ensureControlDsvProgressUi();
-  const completedBefore = Number(context.completedBefore || 0);
   const total = Number(context.total || progress.total || 0);
-  const completed = Math.min(total, completedBefore + Number(progress.completed || 0));
+  const completed = Math.min(total, Number(progress.completed || 0));
   const percentage = total ? Math.round((completed / total) * 100) : 0;
   const jobState = context.jobStatus || progress.phase || 'running';
   const fallbackActive = Boolean(progress.fallbackReason) || (progress.requestedSpeedProfile === 'fast' && progress.effectiveSpeedProfile === 'safe');
@@ -693,20 +709,23 @@ function updateControlDsvProgress(progress, context = {}) {
     checking: 'Lettura stato dalla pagina DSV',
     waiting: 'Pausa di sicurezza prima della prossima spedizione',
     syncing: 'Salvataggio dei risultati nel tracking center',
+    cancelling: 'Interruzione richiesta: completamento della spedizione corrente',
+    cancelled: 'Verifica DSV interrotta',
     complete: 'Verifica DSV completata',
     failed: 'Verifica DSV interrotta',
   };
   const operationStartedAt = Date.parse(context.operationStartedAt || progress.startedAt || '');
   const elapsedMs = Number.isFinite(operationStartedAt) ? Date.now() - operationStartedAt : 0;
-  const remainingMs = completed > 0 && completed < total ? (elapsedMs / completed) * (total - completed) : 0;
-  const cachedCount = Number(context.cachedBefore || 0) + Number(progress.cachedCount || 0);
-  const errorCount = Number(context.errorBefore || 0) + Number(progress.errorCount || 0);
+  const liveSamples = Number(progress.liveSampleCount || 0);
+  const remainingMs = liveSamples >= 2 && completed < total ? Number(progress.averageDurationMs || 0) * (total - completed) : 0;
+  const cachedCount = Number(progress.cachedCount || 0);
+  const errorCount = Number(progress.errorCount || 0);
   const requestedMode = progress.requestedSpeedProfile || dsvBetaSettings?.speedProfile || 'safe';
   const effectiveMode = progress.effectiveSpeedProfile || requestedMode;
 
   container.hidden = false;
   container.dataset.state = fallbackActive ? 'fallback' : jobState;
-  container.setAttribute('aria-busy', ['queued', 'preparing', 'checking', 'waiting', 'syncing', 'running'].includes(jobState) ? 'true' : 'false');
+  container.setAttribute('aria-busy', ['queued', 'preparing', 'checking', 'waiting', 'syncing', 'running', 'cancelling'].includes(jobState) ? 'true' : 'false');
   $('#control-dsv-progress-bar').style.width = `${percentage}%`;
   $('#control-dsv-progress-text').textContent = `${completed} di ${total} · ${percentage}%`;
   const track = container.querySelector('.progress-track');
@@ -725,13 +744,14 @@ function updateControlDsvProgress(progress, context = {}) {
   mode.classList.toggle('fallback', fallbackActive);
 
   const batch = $('#control-dsv-progress-batch');
-  batch.textContent = `Blocco ${Number(context.batchIndex || 0) + 1} di ${Number(context.batchCount || 1)}`;
-  batch.hidden = Number(context.batchCount || 1) <= 1;
+  const batchCount = Number(progress.batchCount || 1);
+  batch.textContent = `Blocco ${Number(progress.batchIndex || 1)} di ${batchCount}`;
+  batch.hidden = batchCount <= 1;
   $('#control-dsv-progress-elapsed').textContent = `Trascorsi ${formatControlProgressDuration(elapsedMs)}`;
 
   const eta = $('#control-dsv-progress-eta');
-  eta.textContent = `Stima ${formatControlProgressDuration(remainingMs)} rimanenti`;
-  eta.hidden = !remainingMs || jobState === 'queued';
+  eta.textContent = remainingMs ? `Circa ${formatControlProgressDuration(remainingMs)} rimanenti` : 'Calcolo della stima…';
+  eta.hidden = jobState === 'queued' || completed >= total || ['cancelled', 'failed'].includes(jobState);
 
   const counts = $('#control-dsv-progress-counts');
   counts.textContent = `${cachedCount} da cache · ${errorCount} errori`;
@@ -740,92 +760,85 @@ function updateControlDsvProgress(progress, context = {}) {
   const outcome = $('#control-dsv-progress-outcome');
   outcome.textContent = progress.lastStatus ? `Ultimo esito: ${progress.lastStatus}` : '';
   outcome.hidden = !progress.lastStatus;
+
+  const cancelButton = $('#control-dsv-cancel');
+  const cancellable = ['queued', 'running', 'preparing', 'checking', 'waiting'].includes(jobState);
+  cancelButton.hidden = !cancellable && jobState !== 'cancelling';
+  cancelButton.disabled = jobState === 'cancelling';
+  cancelButton.textContent = jobState === 'cancelling' ? 'Interruzione richiesta…' : 'Interrompi dopo questa spedizione';
+
+  const queuePosition = Number(progress.queuePosition || 0);
+  if (jobState === 'queued' && queuePosition > 0) $('#control-dsv-progress-phase').textContent = `In coda · ${queuePosition} ${queuePosition === 1 ? 'operazione prima' : 'operazioni prima'}`;
+  const announcementKey = `${progress.phase}:${completed === total ? completed : Math.floor(completed / 10)}`;
+  if (container.dataset.announcement !== announcementKey) {
+    container.dataset.announcement = announcementKey;
+    $('#control-dsv-progress-live').textContent = `${phaseLabels[progress.phase] || 'Verifica DSV in corso'}. ${completed} di ${total}.`;
+  }
 }
 
-async function waitForControlDsvBeta(jobId, batchContext = { completedBefore: 0, total: 0, batchIndex: 0, batchCount: 1 }) {
+async function waitForControlDsvBeta(jobId, context = {}) {
   const snapshot = await request(`/api/dsv-beta/jobs/${jobId}`);
-  updateControlDsvProgress(snapshot.progress, { ...batchContext, jobStatus: snapshot.status });
-  if (snapshot.status === 'queued' || snapshot.status === 'running') {
+  updateControlDsvProgress(snapshot.progress, { ...context, jobStatus: snapshot.status });
+  const partialCount = snapshot.partialResults?.length || 0;
+  if (partialCount > Number(context.renderedResults || 0)) {
+    context.renderedResults = partialCount;
+    await refreshControlCenter();
+  }
+  if (['queued', 'running', 'cancelling'].includes(snapshot.status)) {
     tell('#control-dsv-message', '');
     await new Promise((resolve) => setTimeout(resolve, 750));
-    return waitForControlDsvBeta(jobId, batchContext);
+    return waitForControlDsvBeta(jobId, context);
   }
-  if (snapshot.status === 'failed') throw new Error(snapshot.error || 'La verifica DSV non è riuscita.');
+  if (snapshot.status === 'failed') {
+    const error = new Error(snapshot.error || 'La verifica DSV non è riuscita.');
+    error.result = snapshot.result;
+    throw error;
+  }
   return snapshot.result;
 }
 
-async function startControlDsvVerification(trackingNumbers) {
-  if (!dsvBetaSettings?.enabled) throw new Error('Attiva prima la beta DSV/Schenker nella configurazione e salva.');
-  const maxRows = dsvBetaSettings.maxRows;
-  if (!trackingNumbers.length) throw new Error('Seleziona almeno una spedizione.');
-  const uniqueTrackingNumbers = [...new Set(trackingNumbers)];
+async function cancelControlDsvVerification() {
+  if (!activeControlDsvJobId) return;
+  const button = $('#control-dsv-cancel');
+  if (button) { button.disabled = true; button.textContent = 'Interruzione richiesta…'; }
+  try {
+    await request(`/api/dsv-beta/jobs/${encodeURIComponent(activeControlDsvJobId)}/cancel`, { method: 'POST' });
+  } catch (error) {
+    tell('#control-dsv-message', error.message, 'error');
+    if (button) { button.disabled = false; button.textContent = 'Interrompi dopo questa spedizione'; }
+  }
+}
 
-  const previousMap = new Map();
-  for (const tn of uniqueTrackingNumbers) {
-    const existing = controlRecords.find((r) => r.trackingNumber === tn);
-    previousMap.set(tn, {
+function controlDsvPreviousMap(trackingNumbers) {
+  return new Map(trackingNumbers.map((trackingNumber) => {
+    const existing = controlRecords.find((row) => row.trackingNumber === trackingNumber);
+    return [trackingNumber, {
       dsvStatus: existing?.dsvStatus || 'Non verificato',
       orderReference: existing?.orderReference || '—',
       currentState: existing?.currentState || '—',
       dsvStatusAt: existing?.dsvStatusAt || existing?.dsvStatusDateRaw || '',
-    });
-  }
+    }];
+  }));
+}
 
-  const batches = [];
-  for (let index = 0; index < uniqueTrackingNumbers.length; index += maxRows) batches.push(uniqueTrackingNumbers.slice(index, index + maxRows));
-  const operationStartedAt = new Date().toISOString();
-  $('#control-dsv-progress strong').textContent = 'Verifica DSV in corso';
-  updateControlDsvProgress({ completed: 0, total: uniqueTrackingNumbers.length, phase: 'preparing', requestedSpeedProfile: dsvBetaSettings?.speedProfile }, { total: uniqueTrackingNumbers.length, batchCount: batches.length, operationStartedAt });
-  tell('#control-dsv-message', '');
-  const results = [];
-  let safeguards = null;
-  try {
-    for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
-      const batch = batches[batchIndex];
-      const completedBefore = results.length;
-      const cachedBefore = results.filter((row) => row.cached).length;
-      const errorBefore = results.filter((row) => row.status === 'Errore beta').length;
-      const { jobId } = await request('/api/dsv-beta/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trackingNumbers: batch }) });
-      const result = await waitForControlDsvBeta(jobId, { completedBefore, cachedBefore, errorBefore, total: uniqueTrackingNumbers.length, batchIndex, batchCount: batches.length, operationStartedAt });
-      results.push(...result.results);
-      safeguards = result.safeguards;
-      updateControlDsvProgress({
-        completed: results.length,
-        total: uniqueTrackingNumbers.length,
-        phase: results.length === uniqueTrackingNumbers.length ? 'complete' : 'preparing',
-        cachedCount: results.filter((row) => row.cached).length,
-        errorCount: results.filter((row) => row.status === 'Errore beta').length,
-        lastStatus: results.at(-1)?.status || '',
-        requestedSpeedProfile: safeguards?.speedProfile,
-        effectiveSpeedProfile: safeguards?.effectiveSpeedProfile,
-        fallbackReason: safeguards?.fallbackReason,
-      }, { total: uniqueTrackingNumbers.length, batchIndex, batchCount: batches.length, operationStartedAt, jobStatus: results.length === uniqueTrackingNumbers.length ? 'complete' : 'preparing' });
-    }
-  } catch (error) {
-    const progressElem = $('#control-dsv-progress');
-    if (progressElem) progressElem.hidden = true;
-    await refreshControlCenter();
-    throw new Error(`Verifica interrotta dopo ${results.length} di ${uniqueTrackingNumbers.length} spedizioni: ${error.message}`);
-  }
+async function finalizeControlDsvVerification(result, uniqueTrackingNumbers, previousMap) {
+  const results = result?.results || [];
+  const safeguards = result?.safeguards || null;
+  const cancelled = Boolean(result?.cancelled);
+  const batchCount = safeguards?.batchCount || Math.ceil(uniqueTrackingNumbers.length / (dsvBetaSettings?.batchSize || 10));
   const cached = results.filter((row) => row.cached).length;
   const failed = results.filter((row) => row.status === 'Errore beta').length;
   const completed = results.length - failed;
-  const progressElem = $('#control-dsv-progress');
-  if (progressElem) progressElem.hidden = true;
-  const batchSummary = batches.length > 1 ? ` in ${batches.length} blocchi` : '';
 
   const reportRows = results.map((item) => {
     const prev = previousMap.get(item.trackingNumber) || { dsvStatus: 'Non verificato', orderReference: '—', currentState: '—', dsvStatusAt: '' };
-    const prevStatus = prev.dsvStatus;
-    const newStatus = item.status;
-    const isChanged = prevStatus !== newStatus;
     return {
       trackingNumber: item.trackingNumber,
       orderReference: prev.orderReference,
       currentState: prev.currentState,
-      prevStatus,
-      newStatus,
-      isChanged,
+      prevStatus: prev.dsvStatus,
+      newStatus: item.status,
+      isChanged: prev.dsvStatus !== item.status,
       detail: item.detail || '',
       cached: Boolean(item.cached),
       statusAt: item.statusAt || item.statusDateRaw || prev.dsvStatusAt || '',
@@ -836,22 +849,75 @@ async function startControlDsvVerification(trackingNumbers) {
   lastVerificationReport = {
     timestamp: new Date(),
     total: uniqueTrackingNumbers.length,
-    batches: batches.length,
+    batches: batchCount,
     completed,
     failed,
     cached,
+    cancelled,
     rows: reportRows,
     safeguards,
   };
 
-  const messageText = failed
-    ? `${completed} spedizioni verificate${batchSummary}, ${failed} con errore.`
-    : `${completed} spedizioni verificate${batchSummary}${cached ? `, ${cached} da cache` : ''}.`;
+  const batchSummary = batchCount > 1 ? ` in ${batchCount} blocchi operativi` : '';
+  const messageText = cancelled
+    ? `Verifica interrotta: conservati ${results.length} risultati su ${uniqueTrackingNumbers.length}.`
+    : failed
+      ? `${completed} spedizioni verificate${batchSummary}, ${failed} con errore.`
+      : `${completed} spedizioni verificate${batchSummary}${cached ? `, ${cached} da cache` : ''}.`;
 
-  renderControlDsvSuccessNotification(messageText, failed ? 'warning' : 'success');
+  renderControlDsvSuccessNotification(messageText, cancelled || failed ? 'warning' : 'success');
   controlSelectedTrackingNumbers.clear();
   await refreshControlCenter();
-  return { results, safeguards };
+  return { results, safeguards, cancelled };
+}
+
+async function startControlDsvVerification(trackingNumbers) {
+  if (!dsvBetaSettings?.enabled) throw new Error('Attiva prima la beta DSV/Schenker nella configurazione e salva.');
+  const maxRows = dsvBetaSettings.maxRows || 100;
+  if (!trackingNumbers.length) throw new Error('Seleziona almeno una spedizione.');
+  const uniqueTrackingNumbers = [...new Set(trackingNumbers)];
+  if (uniqueTrackingNumbers.length > maxRows) throw new Error(`Seleziona al massimo ${maxRows} spedizioni per operazione.`);
+  if (activeControlDsvJobId) throw new Error('È già in corso una verifica DSV.');
+  const previousMap = controlDsvPreviousMap(uniqueTrackingNumbers);
+  const operationStartedAt = new Date().toISOString();
+  $('#control-dsv-progress strong').textContent = 'Verifica DSV in corso';
+  updateControlDsvProgress({ completed: 0, total: uniqueTrackingNumbers.length, phase: 'preparing', requestedSpeedProfile: dsvBetaSettings?.speedProfile }, { total: uniqueTrackingNumbers.length, operationStartedAt });
+  tell('#control-dsv-message', '');
+  try {
+    const { jobId } = await request('/api/dsv-beta/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trackingNumbers: uniqueTrackingNumbers }) });
+    activeControlDsvJobId = jobId;
+    sessionStorage.setItem(CONTROL_DSV_JOB_STORAGE_KEY, JSON.stringify({ jobId, trackingNumbers: uniqueTrackingNumbers, previous: [...previousMap], operationStartedAt }));
+    updateControlSelectionUi([...document.querySelectorAll('.control-row-select')].map((input) => ({ trackingNumber: input.dataset.tracking })));
+    const result = await waitForControlDsvBeta(jobId, { total: uniqueTrackingNumbers.length, operationStartedAt, renderedResults: 0 });
+    sessionStorage.removeItem(CONTROL_DSV_JOB_STORAGE_KEY);
+    activeControlDsvJobId = '';
+    return await finalizeControlDsvVerification(result, uniqueTrackingNumbers, previousMap);
+  } catch (error) {
+    sessionStorage.removeItem(CONTROL_DSV_JOB_STORAGE_KEY);
+    activeControlDsvJobId = '';
+    await refreshControlCenter();
+    const partialCount = error.result?.results?.length || 0;
+    throw new Error(`Verifica interrotta dopo ${partialCount} di ${uniqueTrackingNumbers.length} spedizioni: ${error.message}`);
+  }
+}
+
+async function resumeControlDsvVerification() {
+  const raw = sessionStorage.getItem(CONTROL_DSV_JOB_STORAGE_KEY);
+  if (!raw) return;
+  try {
+    const saved = JSON.parse(raw);
+    activeControlDsvJobId = saved.jobId;
+    const previousMap = new Map(saved.previous || []);
+    updateControlSelectionUi([...document.querySelectorAll('.control-row-select')].map((input) => ({ trackingNumber: input.dataset.tracking })));
+    const result = await waitForControlDsvBeta(saved.jobId, { total: saved.trackingNumbers.length, operationStartedAt: saved.operationStartedAt, renderedResults: 0 });
+    sessionStorage.removeItem(CONTROL_DSV_JOB_STORAGE_KEY);
+    activeControlDsvJobId = '';
+    await finalizeControlDsvVerification(result, saved.trackingNumbers, previousMap);
+  } catch (error) {
+    sessionStorage.removeItem(CONTROL_DSV_JOB_STORAGE_KEY);
+    activeControlDsvJobId = '';
+    tell('#control-dsv-message', `Impossibile riprendere la verifica: ${error.message}`, 'error');
+  }
 }
 
 function renderControlDsvSuccessNotification(messageText, kind = 'success') {
@@ -1848,12 +1914,12 @@ function setupControlWorkspace() {
   card.querySelector('.control-filters').insertAdjacentHTML('afterbegin', '<label class="control-search-field"><span class="sr-only">Cerca spedizione o ordine</span><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg><input id="control-search-query" type="search" placeholder="Cerca tracking, riferimento o ID ordine" autocomplete="off"></label>');
   card.querySelector('.control-filters').insertAdjacentHTML('beforeend', '<label class="control-dsv-filter-label" hidden>Stato DSV<select id="control-dsv-filter"><option value="">Tutti gli esiti DSV</option><option>Prenotata</option><option>In transito</option><option>Centro di distribuzione</option><option>In consegna</option><option>Consegnata</option><option>Non verificato</option><option>Da verificare manualmente</option><option>Errore beta</option><option>Spedizione non trovata</option><option>Intervento manuale richiesto</option><option>Eccezione DSV</option><option value="Archiviate">Archiviate</option></select></label><div class="control-filters-right"><label class="control-date-label"><span>Controllato dal</span><input id="control-date-filter" type="date"></label><button id="control-clear-filters" type="button" class="secondary control-clear-filters" hidden>Pulisci filtri</button></div>');
   card.querySelector('.control-filters').insertAdjacentHTML('afterend', '<div id="control-mapping-alert" class="control-mapping-alert" hidden></div>');
-  card.querySelector('.control-filters').insertAdjacentHTML('afterend', '<div id="control-bulk-bar" class="control-bulk-bar" hidden><strong id="control-bulk-count">0 selezionate</strong><span>Azioni sulla selezione</span><button id="control-bulk-verify" type="button">Verifica DSV</button><button id="control-bulk-sync-prestashop" type="button" class="secondary">Allinea stato PrestaShop</button><button id="control-bulk-export" type="button" class="secondary">Esporta CSV</button><button id="control-bulk-manage" type="button" class="secondary">Segna in lavorazione</button><button id="control-bulk-clear" type="button" class="secondary">Deseleziona</button></div>');
+  card.querySelector('.control-filters').insertAdjacentHTML('afterend', '<div id="control-bulk-bar" class="control-bulk-bar" hidden><strong id="control-bulk-count">0 selezionate</strong><span>Shift + clic seleziona un intervallo</span><button id="control-bulk-verify" type="button">Verifica DSV</button><button id="control-bulk-sync-prestashop" type="button" class="secondary">Allinea stato PrestaShop</button><button id="control-bulk-export" type="button" class="secondary">Esporta CSV</button><button id="control-bulk-manage" type="button" class="secondary">Segna in lavorazione</button><button id="control-bulk-clear" type="button" class="secondary">Deseleziona</button></div>');
   $('#control-dsv-filter').addEventListener('change', () => { controlPage = 1; refreshControlCenter(); });
   $('#control-date-filter').addEventListener('change', () => { controlPage = 1; refreshControlCenter(); });
   $('#control-search-query').addEventListener('input', () => { $('#global-tracking-query').value = $('#control-search-query').value; controlPage = 1; clearTimeout(window.controlSearchTimer); window.controlSearchTimer = setTimeout(refreshControlCenter, 300); });
   $('#control-clear-filters').addEventListener('click', () => { if ($('#global-tracking-query')) $('#global-tracking-query').value = ''; if ($('#control-search-query')) $('#control-search-query').value = ''; if ($('#control-dsv-filter')) $('#control-dsv-filter').value = ''; if ($('#control-date-filter')) $('#control-date-filter').value = ''; if ($('#control-exceptions')) $('#control-exceptions').checked = false; controlMetricFilter = 'all'; controlPrestaStateFilter = ''; closeControlPrestaFilter(); controlPage = 1; refreshControlCenter(); });
-  $('#control-bulk-clear').addEventListener('click', () => { controlSelectedTrackingNumbers.clear(); refreshControlCenter(); });
+  $('#control-bulk-clear').addEventListener('click', () => { controlSelectedTrackingNumbers.clear(); lastControlSelectedTrackingNumber = ''; refreshControlCenter(); });
   $('#control-bulk-verify').addEventListener('click', () => $('#verify-control-selected').click());
   $('#control-bulk-sync-prestashop').addEventListener('click', openBulkPrestaShopDialog);
   $('#control-bulk-export').addEventListener('click', exportSelectedControlRows);
@@ -3832,14 +3898,17 @@ $('#control-table tbody').addEventListener('change', (event) => {
   const trackingNumber = event.target.dataset.tracking;
   if (event.target.checked) controlSelectedTrackingNumbers.add(trackingNumber);
   else controlSelectedTrackingNumbers.delete(trackingNumber);
+  event.target.closest('tr')?.classList.toggle('is-selected', event.target.checked);
   updateControlSelectionUi([...document.querySelectorAll('.control-row-select')].map((input) => ({ trackingNumber: input.dataset.tracking })));
 });
 $('#control-toggle-all').addEventListener('change', (event) => {
   document.querySelectorAll('.control-row-select').forEach((input) => {
     input.checked = event.target.checked;
+    input.closest('tr')?.classList.toggle('is-selected', event.target.checked);
     if (event.target.checked) controlSelectedTrackingNumbers.add(input.dataset.tracking);
     else controlSelectedTrackingNumbers.delete(input.dataset.tracking);
   });
+  lastControlSelectedTrackingNumber = '';
   updateControlSelectionUi([...document.querySelectorAll('.control-row-select')].map((input) => ({ trackingNumber: input.dataset.tracking })));
 });
 $('#verify-control-selected').addEventListener('click', async () => {
@@ -3859,6 +3928,25 @@ $('.control-center-card').addEventListener('click', (event) => {
   else refreshControlCenter();
 });
 $('#control-table tbody').addEventListener('click', (event) => {
+  const selectionInput = event.target.closest('.control-row-select');
+  if (selectionInput) {
+    const inputs = [...document.querySelectorAll('#control-table tbody .control-row-select')];
+    const currentIndex = inputs.indexOf(selectionInput);
+    const anchorIndex = inputs.findIndex((input) => input.dataset.tracking === lastControlSelectedTrackingNumber);
+    if (event.shiftKey && anchorIndex >= 0 && currentIndex >= 0) {
+      const [start, end] = anchorIndex < currentIndex ? [anchorIndex, currentIndex] : [currentIndex, anchorIndex];
+      inputs.slice(start, end + 1).forEach((input) => {
+        input.checked = selectionInput.checked;
+        input.closest('tr')?.classList.toggle('is-selected', selectionInput.checked);
+        if (selectionInput.checked) controlSelectedTrackingNumbers.add(input.dataset.tracking);
+        else controlSelectedTrackingNumbers.delete(input.dataset.tracking);
+      });
+      updateControlSelectionUi(inputs.map((input) => ({ trackingNumber: input.dataset.tracking })));
+    }
+    lastControlSelectedTrackingNumber = selectionInput.dataset.tracking;
+    return;
+  }
+  if (event.target.closest('.control-select-cell')) return;
   const stateFilterButton = event.target.closest('.control-presta-state-shortcut');
   if (stateFilterButton) {
     controlPrestaStateFilter = stateFilterButton.dataset.prestaStateFilter || '';
@@ -3941,5 +4029,7 @@ window.addEventListener('scroll', () => {
 }, { passive: true });
 
 setupWorkspace();
-Promise.all([initialConfig(), loadDsvBeta(), refreshControlCenter(), loadCronStatus()]).catch(() => {});
+Promise.all([initialConfig(), loadDsvBeta(), refreshControlCenter(), loadCronStatus()])
+  .then(() => resumeControlDsvVerification())
+  .catch(() => {});
 showView(location.hash.slice(1) || 'control');

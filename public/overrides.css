@@ -115,11 +115,17 @@ main[data-active-view="control"] .steps, main[data-active-view="exceptions"] .st
 .control-progress-current > span:last-child { flex: 0 0 auto; color: var(--dsv-navy); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: .67rem; font-weight: 750; }
 .control-operation-progress .progress-track { position: relative; height: 7px; margin: 0; border-radius: 2px; background: #dbe6f3; }
 .control-operation-progress .progress-bar { border-radius: 2px; background: var(--dsv-blue); }
+.control-progress-footer { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-width: 0; }
 .control-progress-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 0; min-height: 17px; color: #536984; font-size: .63rem; font-weight: 650; font-variant-numeric: tabular-nums; }
 .control-progress-meta > span { display: inline-flex; align-items: center; }
 .control-progress-meta > span:not(:first-child)::before { content: ''; width: 1px; height: 11px; margin: 0 8px; background: #b9c8da; }
 .control-progress-meta .fallback { color: #8a5700; }
+.control-progress-footer > button { flex: 0 0 auto; min-height: 30px; padding: 5px 9px; border-color: #9db2cc; color: var(--dsv-navy); font-size: .66rem; }
+.control-progress-footer > button:disabled { color: #6d7f96; }
 .control-operation-progress[data-state="fallback"] .progress-heading strong::before { background: var(--warning); }
+.control-operation-progress[data-state="cancelling"] .progress-heading strong::before,
+.control-operation-progress[data-state="cancelled"] .progress-heading strong::before { background: #607996; }
+.control-operation-progress[data-state="cancelled"] .progress-bar { background: #607996; }
 .control-operation-progress[data-state="failed"] .progress-heading strong::before { background: var(--danger); }
 .control-operation-progress[data-state="failed"] .progress-bar { background: var(--danger); }
 .control-operation-progress[data-state="complete"] .progress-heading strong::before,
@@ -202,8 +208,10 @@ main[data-active-view="control"] .steps, main[data-active-view="exceptions"] .st
 .control-list-pane tbody tr { cursor: pointer; }
 .control-list-pane tbody tr:hover { background: #eef4fc; }
 .control-list-pane tbody tr.active { background: #e3eeff; box-shadow: inset 3px 0 var(--dsv-blue); }
-.control-list-pane tbody tr:has(.row-select:checked) { background: #edf4ff; }
-.control-list-pane th:nth-child(1), .control-list-pane td:nth-child(1) { width: 40px; }
+.control-list-pane tbody tr:has(.row-select:checked),
+.control-list-pane tbody tr.is-selected { background: #e8f1ff; }
+.control-list-pane tbody tr.is-selected:hover { background: #dfebfc; }
+.control-list-pane th:nth-child(1), .control-list-pane td:nth-child(1) { width: 46px; }
 .control-list-pane th:nth-child(2), .control-list-pane td:nth-child(2) { width: 15%; }
 .control-list-pane th:nth-child(3), .control-list-pane td:nth-child(3) { width: 14%; }
 .control-list-pane th:nth-child(4), .control-list-pane td:nth-child(4) { width: 16%; }
@@ -278,7 +286,39 @@ main[data-active-view="control"] .steps, main[data-active-view="exceptions"] .st
 .control-presta-state-shortcut:hover { border-color: #9ebbe3; background: #edf4ff; }
 .control-presta-state-shortcut:focus-visible { outline: 2px solid var(--dsv-blue); outline-offset: 1px; }
 .control-presta-state-shortcut .prestashop-status { pointer-events: none; }
-.control-list-pane .row-select { width: 16px; height: 16px; accent-color: var(--dsv-blue); }
+.control-select-heading,
+.control-select-cell { position: relative; padding: 0 !important; }
+.control-select-target { position: absolute; inset: 0; display: grid; place-items: center; min-width: 40px; min-height: 40px; cursor: pointer; }
+.control-select-target:hover .row-select { border-color: var(--dsv-blue); background: #f3f7fd; }
+.control-select-target:focus-within { outline: 2px solid var(--dsv-blue); outline-offset: -3px; }
+.control-list-pane .row-select {
+  appearance: none;
+  display: inline-grid;
+  place-content: center;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid #8697ad;
+  border-radius: 3px;
+  background: #fff;
+  cursor: pointer;
+  transition: border-color 120ms ease-out, background-color 120ms ease-out;
+}
+.control-list-pane .row-select::before {
+  content: '';
+  width: 8px;
+  height: 4px;
+  border-bottom: 2px solid #fff;
+  border-left: 2px solid #fff;
+  opacity: 0;
+  transform: translateY(-1px) rotate(-45deg);
+}
+.control-list-pane .row-select:checked { border-color: var(--dsv-blue); background: var(--dsv-blue); }
+.control-list-pane .row-select:checked::before { opacity: 1; }
+.control-list-pane .row-select:indeterminate { border-color: var(--dsv-blue); background: var(--dsv-blue); }
+.control-list-pane .row-select:indeterminate::before { width: 8px; height: 0; border: 0; border-top: 2px solid #fff; opacity: 1; transform: none; }
+.control-list-pane .row-select:focus-visible { outline: none; }
 .control-list-pane .open-shipment { display: inline-grid; place-items: center; width: 30px; min-height: 30px; padding: 6px; border: 1px solid transparent; background: transparent; color: var(--dsv-blue-dark); }
 .control-list-pane .open-shipment:hover { border-color: var(--dsv-blue); background: var(--dsv-blue-soft); }
 .control-list-pane .open-shipment svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
@@ -1134,6 +1174,11 @@ main[data-active-view="control"] .steps, main[data-active-view="exceptions"] .st
   .control-bulk-bar { flex-wrap: wrap; }
   .control-bulk-bar span { width: 100%; margin-right: 0; }
   .control-bulk-bar button { flex: 1 1 auto; }
+  .control-progress-current { align-items: flex-start; flex-direction: column; gap: 3px; }
+  .control-progress-current > span:first-child { white-space: normal; }
+  .control-progress-footer { align-items: stretch; flex-direction: column; gap: 7px; }
+  .control-progress-footer > button { width: 100%; min-height: 40px; }
+  .control-progress-meta > span:not(:first-child)::before { margin-inline: 6px; }
   .shipment-detail { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); border-radius: 3px; }
   .detail-heading { display: grid; grid-template-columns: minmax(0,1fr) auto; }
   .detail-heading > div:first-child { min-width: 0; }
