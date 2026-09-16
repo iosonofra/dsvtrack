@@ -194,7 +194,7 @@ main[data-active-view="control"] .steps, main[data-active-view="exceptions"] .st
 
 .control-workbench { display: grid; flex: 1 1 auto; grid-template-columns: minmax(0,1fr); min-height: 0; border-top: 1px solid var(--line); }
 .control-list-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-.control-list-pane .table-wrap { flex: 1 1 auto; height: auto; max-height: none; min-height: 0; margin: 0; overflow: auto; scrollbar-color: #9badc3 transparent; }
+.control-list-pane .table-wrap { flex: 1 1 auto; height: auto; max-height: none; min-height: 0; margin: 0; overflow: auto; contain: layout paint; scrollbar-color: #9badc3 transparent; }
 .control-list-pane table { width: 100%; min-width: 980px; table-layout: fixed; }
 .control-list-pane th { position: sticky; top: 0; z-index: 2; height: 40px; padding: 8px 10px; background: #eef1f5; box-shadow: 0 1px var(--line-strong); color: #435a78; font-size: .67rem; letter-spacing: .035em; }
 .control-list-pane td { height: 50px; padding: 8px 10px; border-bottom-color: #dfe4eb; white-space: nowrap; font-size: .76rem; font-variant-numeric: tabular-nums; }
