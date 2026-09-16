@@ -205,13 +205,15 @@ export class PrestaShopClient {
         if (!updateState) throw new Error(`Tracking già presente (${shipment.tracking_number}): riga saltata.`);
         trackingSkipped = true;
       } else {
-        const fields = {
-          id: shipment.id, id_order: orderId, id_carrier: carrierId,
-          id_order_invoice: shipment.id_order_invoice ?? '', weight: shipment.weight ?? '0',
-          shipping_cost_tax_excl: shipment.shipping_cost_tax_excl ?? '0', shipping_cost_tax_incl: shipment.shipping_cost_tax_incl ?? '0',
-          tracking_number: trackingNumber, date_add: shipment.date_add ?? '',
-        };
-        await this.sendXml(`order_carriers/${shipment.id}`, 'PUT', resourceXml('order_carrier', fields), { sendemail: '0' });
+        // Mantiene importazione singola e massiva sullo stesso percorso di
+        // aggiornamento, evitando differenze nel payload order_carrier.
+        await this.applyOrderCarrierOnly({
+          orderId,
+          trackingNumber,
+          carrierId,
+          overwrite: false,
+          shipment,
+        });
       }
     }
     if (updateState) await this.sendXml('order_histories', 'POST', resourceXml('order_history', { id_order: orderId, id_order_state: stateId }), { sendemail: '0' });
@@ -318,8 +320,8 @@ export class PrestaShopClient {
     };
   }
 
-  async applyOrderCarrierOnly({ orderId, trackingNumber, carrierId, overwrite = false }) {
-    const carriers = await this.findOrderCarriers(orderId);
+  async applyOrderCarrierOnly({ orderId, trackingNumber, carrierId, overwrite = false, shipment: suppliedShipment = null }) {
+    const carriers = suppliedShipment ? [suppliedShipment] : await this.findOrderCarriers(orderId);
     if (carriers.length !== 1) {
       throw new Error(carriers.length ? 'L’ordine ha più spedizioni: aggiornamento manuale richiesto.' : 'Nessuna spedizione associata all’ordine.');
     }

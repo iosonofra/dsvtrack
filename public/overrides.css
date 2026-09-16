@@ -56,7 +56,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--dsv-blue); box-s
 .topbar-icon svg, .workspace-nav svg { fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 
 main { display: grid; grid-template-columns: var(--sidebar-width) minmax(0,1fr); align-items: start; width: 100%; margin: 0; }
-.workspace-nav { position: sticky; top: var(--topbar-height); grid-column: 1; grid-row: 1 / span 30; align-self: start; width: var(--sidebar-width); min-height: calc(100vh - var(--topbar-height)); padding: 18px 12px; border: 0; border-right: 1px solid var(--line); border-radius: 0; background: #fbfcfd; box-shadow: none; }
+.workspace-nav { position: sticky; top: var(--topbar-height); grid-column: 1; grid-row: 1 / span 2; align-self: start; width: var(--sidebar-width); min-height: calc(100vh - var(--topbar-height)); padding: 18px 12px; border: 0; border-right: 1px solid var(--line); border-radius: 0; background: #fbfcfd; box-shadow: none; }
 .nav-heading { display: flex; align-items: center; justify-content: space-between; min-height: 30px; padding: 0 8px 10px; color: #6b7b91; font-size: .66rem; font-weight: 800; letter-spacing: .1em; }
 .nav-heading button { width: 28px; height: 28px; padding: 5px; border: 0; background: transparent; color: #64758d; }
 .nav-heading button:hover { background: #e9eef5; }
