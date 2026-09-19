@@ -943,7 +943,12 @@ app.post('/api/import/apply', async (req, res) => {
       if (!row.canApply) { results.push({ ...row, result: 'Saltata', detail: row.verification || row.validation || 'Non verificata' }); continue; }
       try {
         const outcome = await shop.applyOrderUpdate({ orderId: row.orderId, trackingNumber: row.trackingNumber, carrierId, stateId, updateTracking, updateState });
-        results.push({ ...row, result: 'Aggiornata', detail: outcome.trackingSkipped ? `Ordine ${row.orderId}: tracking già presente, aggiornato solo lo stato` : `Ordine ${row.orderId}` });
+        const detail = outcome.trackingSkipped
+          ? `Ordine ${row.orderId}: tracking già presente, aggiornato solo lo stato`
+          : outcome.recoveredAfterError
+            ? `Ordine ${row.orderId}: tracking e corriere confermati tramite rilettura dopo una risposta anomala di PrestaShop`
+            : `Ordine ${row.orderId}`;
+        results.push({ ...row, result: 'Aggiornata', detail });
       } catch (error) { results.push({ ...row, result: 'Errore', detail: error.message }); }
     }
     const summary = results.reduce((output, item) => { output[item.result] = (output[item.result] ?? 0) + 1; return output; }, {});
@@ -1067,7 +1072,12 @@ async function runApplyJob(job, prepared) {
     for (const [index, row] of prepared.rows.entries()) {
       try {
         const outcome = await shop.applyOrderUpdate({ orderId: row.orderId, trackingNumber: row.trackingNumber, carrierId: prepared.carrierId, stateId: prepared.stateId, updateTracking: prepared.updateTracking, updateState: prepared.updateState });
-        results.push({ ...row, result: 'Aggiornata', detail: outcome.trackingSkipped ? `Ordine ${row.orderId}: tracking già presente, aggiornato solo lo stato` : `Ordine ${row.orderId}` });
+        const detail = outcome.trackingSkipped
+          ? `Ordine ${row.orderId}: tracking già presente, aggiornato solo lo stato`
+          : outcome.recoveredAfterError
+            ? `Ordine ${row.orderId}: tracking e corriere confermati tramite rilettura dopo una risposta anomala di PrestaShop`
+            : `Ordine ${row.orderId}`;
+        results.push({ ...row, result: 'Aggiornata', detail });
       } catch (error) { results.push({ ...row, result: 'Errore', detail: error.message }); }
       job.progress.completed = index + 1;
     }

@@ -3,6 +3,8 @@ function trimSlash(value) {
 }
 
 const REQUEST_INTERVAL_MS = 800;
+const WRITE_CONFIRMATION_ATTEMPTS = 4;
+const WRITE_CONFIRMATION_DELAY_MS = 650;
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
 const RETRYABLE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -197,17 +199,24 @@ export class PrestaShopClient {
 
   async applyOrderUpdate({ orderId, trackingNumber, carrierId, stateId, updateTracking, updateState }) {
     let trackingSkipped = false;
+    let carrierUpdateOutcome = null;
     if (updateTracking) {
       const carriers = await this.findOrderCarriers(orderId);
       if (carriers.length !== 1) throw new Error(carriers.length ? 'L’ordine ha più spedizioni: aggiornamento manuale richiesto.' : 'Nessuna spedizione associata all’ordine.');
       const shipment = carriers[0];
-      if (String(shipment.tracking_number ?? '').trim()) {
+      const existingTracking = String(shipment.tracking_number ?? '').trim();
+      const requestedTracking = String(trackingNumber ?? '').trim();
+      const carrierAlreadyAligned = String(shipment.id_carrier ?? '').trim() === String(carrierId ?? '').trim();
+      if (existingTracking && existingTracking !== requestedTracking) {
         if (!updateState) throw new Error(`Tracking già presente (${shipment.tracking_number}): riga saltata.`);
+        trackingSkipped = true;
+      } else if (existingTracking && carrierAlreadyAligned) {
         trackingSkipped = true;
       } else {
         // Mantiene importazione singola e massiva sullo stesso percorso di
-        // aggiornamento, evitando differenze nel payload order_carrier.
-        await this.applyOrderCarrierOnly({
+        // aggiornamento. Se il tracking esiste già ma il corriere è diverso,
+        // riallinea comunque il corriere invece di saltare la riga.
+        carrierUpdateOutcome = await this.applyOrderCarrierOnly({
           orderId,
           trackingNumber,
           carrierId,
@@ -217,7 +226,11 @@ export class PrestaShopClient {
       }
     }
     if (updateState) await this.sendXml('order_histories', 'POST', resourceXml('order_history', { id_order: orderId, id_order_state: stateId }), { sendemail: '0' });
-    return { trackingSkipped };
+    return {
+      trackingSkipped,
+      recoveredAfterError: Boolean(carrierUpdateOutcome?.recoveredAfterError),
+      carrierUpdateOutcome,
+    };
   }
 
   async getOrderCurrentState(orderId) {
@@ -331,26 +344,82 @@ export class PrestaShopClient {
       throw new Error(`Un tracking diverso (${existingTracking}) è già presente su PrestaShop.`);
     }
 
-    const finalCarrierId = carrierId ? String(carrierId) : String(shipment.id_carrier ?? '');
-    const fields = {
-      id: shipment.id,
-      id_order: orderId,
-      id_carrier: finalCarrierId,
-      id_order_invoice: shipment.id_order_invoice ?? '',
-      weight: shipment.weight ?? '0',
-      shipping_cost_tax_excl: shipment.shipping_cost_tax_excl ?? '0',
-      shipping_cost_tax_incl: shipment.shipping_cost_tax_incl ?? '0',
-      tracking_number: trackingNumber || existingTracking,
-      date_add: shipment.date_add ?? '',
-    };
-    await this.sendXml(`order_carriers/${shipment.id}`, 'PUT', resourceXml('order_carrier', fields), { sendemail: '0' });
+    const finalCarrierId = carrierId ? String(carrierId).trim() : String(shipment.id_carrier ?? '').trim();
+    if (!/^\d+$/.test(finalCarrierId) || Number(finalCarrierId) < 1) {
+      throw new Error(`ID corriere PrestaShop non valido (${finalCarrierId || 'vuoto'}). Ricarica il catalogo corrieri.`);
+    }
+    const finalTrackingNumber = String(trackingNumber || existingTracking).trim();
+    let recoveredAfterError = false;
+    let fallbackUsed = false;
+    try {
+      const outcome = await this.writeOrderCarrierAndConfirm({
+        orderId,
+        shipment,
+        carrierId: finalCarrierId,
+        trackingNumber: finalTrackingNumber,
+      });
+      recoveredAfterError = outcome.recoveredAfterError;
+    } catch (error) {
+      if (!isOrderCarrierIdValidationError(error) || String(shipment.id_carrier ?? '').trim() === finalCarrierId) throw error;
+
+      // Alcuni override PrestaShop rifiutano l'aggiornamento combinato verso un
+      // corriere disattivato, mentre accettano le stesse modifiche separate.
+      // Il fallback usa solo PUT idempotenti: prima salva il tracking con il
+      // corriere storico, poi rilegge e applica il corriere richiesto.
+      fallbackUsed = true;
+      let [freshShipment] = await this.findOrderCarriers(orderId);
+      if (!freshShipment) throw error;
+      if (String(freshShipment.tracking_number ?? '').trim() !== finalTrackingNumber) {
+        await this.writeOrderCarrierAndConfirm({
+          orderId,
+          shipment: freshShipment,
+          carrierId: String(freshShipment.id_carrier ?? '').trim(),
+          trackingNumber: finalTrackingNumber,
+        });
+      }
+      [freshShipment] = await this.findOrderCarriers(orderId);
+      if (!freshShipment) throw error;
+      const carrierOutcome = await this.writeOrderCarrierAndConfirm({
+        orderId,
+        shipment: freshShipment,
+        carrierId: finalCarrierId,
+        trackingNumber: finalTrackingNumber,
+      });
+      recoveredAfterError = carrierOutcome.recoveredAfterError;
+    }
     return {
       success: true,
       orderCarrierId: shipment.id,
-      trackingNumber: fields.tracking_number,
+      trackingNumber: finalTrackingNumber,
       carrierId: finalCarrierId,
       overwritten: Boolean(existingTracking && existingTracking !== trackingNumber),
+      recoveredAfterError,
+      fallbackUsed,
     };
+  }
+
+  async writeOrderCarrierAndConfirm({ orderId, shipment, carrierId, trackingNumber }) {
+    const fields = orderCarrierFields({ orderId, shipment, carrierId, trackingNumber });
+    try {
+      await this.sendXml(`order_carriers/${shipment.id}`, 'PUT', resourceXml('order_carrier', fields), { sendemail: '0' });
+      return { recoveredAfterError: false };
+    } catch (error) {
+      // PrestaShop può salvare la risorsa e rispondere comunque 400. Non
+      // ripetiamo qui la PUT: attendiamo che API/cache espongano il dato.
+      for (let attempt = 0; attempt < WRITE_CONFIRMATION_ATTEMPTS; attempt += 1) {
+        if (attempt) await delay(WRITE_CONFIRMATION_DELAY_MS);
+        try {
+          const refreshedShipments = await this.findOrderCarriers(orderId);
+          const refreshed = refreshedShipments.find((candidate) => String(candidate.id) === String(shipment.id));
+          const trackingMatches = String(refreshed?.tracking_number ?? '').trim() === String(trackingNumber).trim();
+          const carrierMatches = String(refreshed?.id_carrier ?? '').trim() === String(carrierId).trim();
+          if (trackingMatches && carrierMatches) return { recoveredAfterError: true };
+        } catch {
+          // Conserva l'errore di scrittura se tutte le conferme falliscono.
+        }
+      }
+      throw error;
+    }
   }
 }
 
@@ -380,6 +449,24 @@ function xmlValue(value) {
 function resourceXml(resource, fields) {
   const body = Object.entries(fields).map(([key, value]) => `<${key}><![CDATA[${xmlValue(value)}]]></${key}>`).join('');
   return `<?xml version="1.0" encoding="UTF-8"?><prestashop xmlns:xlink="http://www.w3.org/1999/xlink"><${resource}>${body}</${resource}></prestashop>`;
+}
+
+function orderCarrierFields({ orderId, shipment, carrierId, trackingNumber }) {
+  return {
+    id: shipment.id,
+    id_order: orderId,
+    id_carrier: carrierId,
+    id_order_invoice: shipment.id_order_invoice ?? '',
+    weight: shipment.weight ?? '0',
+    shipping_cost_tax_excl: shipment.shipping_cost_tax_excl ?? '0',
+    shipping_cost_tax_incl: shipment.shipping_cost_tax_incl ?? '0',
+    tracking_number: trackingNumber,
+    date_add: shipment.date_add ?? '',
+  };
+}
+
+function isOrderCarrierIdValidationError(error) {
+  return /OrderCarrier-&gt;id_carrier|OrderCarrier->id_carrier|id_carrier non (?:(?:è|e) )?valid/i.test(String(error?.message || ''));
 }
 
 function permissionResult(label, method, status, isSafeWriteProbe = false) {
