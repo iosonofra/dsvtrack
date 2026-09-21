@@ -34,7 +34,7 @@ export DEBIAN_FRONTEND=noninteractive
 echo ""
 echo -e "${YELLOW}==> 1/6 Aggiornamento pacchetti e installazione Node.js 22 LTS...${NC}"
 apt-get update
-apt-get install -y --no-install-recommends curl ca-certificates gnupg git tzdata
+apt-get install -y --no-install-recommends curl ca-certificates gnupg git tzdata build-essential python3
 
 # Installazione Node.js 22 LTS via NodeSource ufficiale
 if ! command -v node >/dev/null 2>&1 || [ "$(node -v | cut -d'.' -f1 | tr -d 'v')" -lt 20 ]; then
@@ -96,6 +96,7 @@ echo ""
 echo -e "${YELLOW}==> 4/6 Installazione dipendenze Node.js e browser Camoufox...${NC}"
 if [ "${INSTALL_CAMOFOX}" = "true" ] || [ "${INSTALL_CAMOFOX}" = "1" ]; then
     npm install --omit=dev
+    npm install @askjo/camofox-browser
     echo "Download binario browser Camoufox (glibc nativo per Linux x86_64)..."
     CAMOUFOX_INSTALL_DIR="${APP_DIR}/.cache/camoufox" npx camoufox-js fetch || true
 else

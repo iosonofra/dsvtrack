@@ -134,7 +134,11 @@ export class PrestaShopClient {
     const payload = await this.request('carriers?display=full');
     return (payload.carriers ?? [])
       .filter((carrier) => String(carrier.deleted ?? '0') !== '1')
-      .map((carrier) => ({ id: String(carrier.id), name: carrier.name }));
+      .map((carrier) => ({
+        id: String(carrier.id),
+        name: carrier.name,
+        active: String(carrier.active ?? '1') === '1',
+      }));
   }
 
   async findOrdersByReference(reference) {

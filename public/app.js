@@ -21,6 +21,7 @@ let controlDetailTrigger = null;
 let controlDetailRequestToken = 0;
 let shipmentDetailDirty = false;
 let prestaShopStateCatalog = null;
+let prestaShopCarrierCatalog = null;
 let prestaShopStateTracking = '';
 let prestaShopLinkTracking = '';
 let prestaShopLinkCandidate = null;
@@ -28,6 +29,10 @@ let dsvStateMappings = {};
 let lastVerificationReport = null;
 let activeReportFilter = 'all';
 let reportSearchQuery = '';
+let bulkTrackingRunning = false;
+let bulkTrackingRetryRows = [];
+let bulkTrackingPreviewFilter = 'all';
+let bulkTrackingExcluded = new Set();
 let activeControlDsvJobId = '';
 const CONTROL_DSV_JOB_STORAGE_KEY = 'dsv-active-verification';
 
@@ -203,30 +208,86 @@ async function copyToClipboard(text) {
   }
 }
 
-function renderRows(rows, state = 'validation') {
-  $('#preview tbody').innerHTML = rows.map((row) => {
-    const originalValue = state === 'verification' ? row.verification : row.validation;
+let currentPreviewTab = 'ready';
+let currentVerificationJobId = null;
+
+function getFilteredPreviewRows(sourceList = previewRows) {
+  if (!sourceList || !sourceList.length) return [];
+  if (currentPreviewTab === 'ready') {
+    return sourceList.filter((r) => r.canApply || r.verification === 'Pronta per aggiornamento' || r.verification === 'In verifica…');
+  }
+  if (currentPreviewTab === 'skipped') {
+    return sourceList.filter((r) => r.alreadyImported || (r.verification && (r.verification.includes('già presente') || r.verification.includes('saltata') || r.verification.includes('Già importata'))));
+  }
+  if (currentPreviewTab === 'invalid') {
+    return sourceList.filter((r) => !r.canApply && !r.alreadyImported && r.verification !== 'In verifica…' && (!r.verification || (!r.verification.includes('già presente') && !r.verification.includes('saltata') && !r.verification.includes('Già importata'))));
+  }
+  return sourceList;
+}
+
+function updatePreviewTabCounts() {
+  const ready = previewRows.filter((r) => r.canApply || r.verification === 'Pronta per aggiornamento' || r.verification === 'In verifica…').length;
+  const skipped = previewRows.filter((r) => r.alreadyImported || (r.verification && (r.verification.includes('già presente') || r.verification.includes('saltata') || r.verification.includes('Già importata')))).length;
+  const invalid = previewRows.filter((r) => !r.canApply && !r.alreadyImported && r.verification !== 'In verifica…' && (!r.verification || (!r.verification.includes('già presente') && !r.verification.includes('saltata') && !r.verification.includes('Già importata')))).length;
+  const total = previewRows.length;
+
+  if ($('#tab-count-ready')) $('#tab-count-ready').textContent = ready;
+  if ($('#tab-count-all')) $('#tab-count-all').textContent = total;
+  if ($('#tab-count-skipped')) $('#tab-count-skipped').textContent = skipped;
+  if ($('#tab-count-invalid')) $('#tab-count-invalid').textContent = invalid;
+
+  document.querySelectorAll('.import-tab-pill').forEach((pill) => {
+    pill.classList.toggle('active', pill.dataset.previewFilter === currentPreviewTab);
+  });
+}
+
+function renderRows(rows, state = 'verification') {
+  updatePreviewTabCounts();
+  const displayRows = getFilteredPreviewRows(rows || previewRows);
+  const tbody = $('#preview tbody');
+  if (!tbody) return;
+  if (!displayRows.length) {
+    const tabLabels = { ready: 'pronte per aggiornamento', skipped: 'già presenti o saltate', invalid: 'da controllare o con errori', all: 'disponibili' };
+    tbody.innerHTML = `<tr><td colspan="8" class="control-empty" style="text-align:center;padding:24px;">Nessuna riga nella scheda "${tabLabels[currentPreviewTab] || currentPreviewTab}".</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = displayRows.map((row) => {
+    const originalValue = state === 'verification' ? (row.verification || row.validation) : row.validation;
     const value = row.applyResult || originalValue;
     const detail = row.applyResult ? ` — ${escapeHtml(row.applyDetail || '')}` : row.existingTracking ? ` — già presente: ${escapeHtml(row.existingTracking)}` : '';
-    const level = row.applyResult === 'Aggiornata' ? 'applied-ok' : row.applyResult === 'Errore' ? 'applied-error' : (row.canApply || originalValue === 'Pronta per la verifica') ? 'ok' : (originalValue.includes('già presente') || originalValue.includes('saltata') || originalValue.includes('Già importata')) ? 'notice' : 'warning';
+    const isVerifying = !row.applyResult && originalValue === 'In verifica…';
+    const level = row.applyResult === 'Aggiornata' ? 'applied-ok' : row.applyResult === 'Errore' ? 'applied-error' : (row.canApply || originalValue === 'Pronta per la verifica' || originalValue === 'Pronta per aggiornamento') ? 'ok' : (originalValue.includes('già presente') || originalValue.includes('saltata') || originalValue.includes('Già importata')) ? 'notice' : isVerifying ? 'verifying' : 'warning';
     const checkbox = row.canApply && !importApplied ? `<input class="row-select" data-row="${row.sourceRow}" type="checkbox" ${row.selected ? 'checked' : ''} aria-label="Includi riga ${row.sourceRow}">` : '—';
     const dsvStatus = row.dsvBetaStatus ? `<span class="dsv-status">${escapeHtml(row.dsvBetaStatus)}</span>` : '—';
-    return `<tr><td>${checkbox}</td><td>${row.sourceRow}</td><td>${copyableValue(row.orderReference, 'Riferimento ordine', 'order-val')}</td><td>${displayDate(row.orderDate)}</td><td>${stateBadge(row.currentState)}</td><td>${copyableValue(row.trackingNumber, 'Numero spedizione', 'tracking-val')}</td><td>${dsvStatus}</td><td class="${level}">${escapeHtml(value)}${detail}</td></tr>`;
+    const resultCell = isVerifying
+      ? '<span class="row-verifying-badge"><span class="row-verifying-spinner"></span> In verifica…</span>'
+      : `${escapeHtml(value)}${detail}`;
+    return `<tr><td>${checkbox}</td><td>${row.sourceRow}</td><td>${copyableValue(row.orderReference, 'Riferimento ordine', 'order-val')}</td><td>${displayDate(row.orderDate)}</td><td>${stateBadge(row.currentState)}</td><td>${copyableValue(row.trackingNumber, 'Numero spedizione', 'tracking-val')}</td><td>${dsvStatus}</td><td class="${level}">${resultCell}</td></tr>`;
   }).join('');
 }
 
 function updateSelectionUi() {
-  const total = previewRows.filter((row) => row.canApply).length;
+  const readyRows = previewRows.filter((row) => row.canApply);
+  const total = readyRows.length;
   const selected = selectedRows().length;
-  $('#selected-count').hidden = !verificationId || importApplied;
-  $('#selected-count').textContent = `${selected} di ${total} righe pronte selezionate per l’aggiornamento.`;
-  $('#select-all').hidden = !verificationId || importApplied;
-  $('#clear-selection').hidden = !verificationId || importApplied;
-  $('#toggle-all').hidden = !verificationId || importApplied;
-  $('#toggle-all').checked = total > 0 && selected === total;
-  $('#toggle-all').indeterminate = selected > 0 && selected < total;
-  $('#apply-import').hidden = selected === 0 || importApplied;
-  if (dsvBetaSettings?.enabled && verificationId) $('#verify-dsv-beta').hidden = selected === 0;
+
+  if ($('#selected-count')) {
+    $('#selected-count').textContent = `${selected} di ${total} selezionate`;
+    $('#selected-count').hidden = !verificationId || importApplied;
+  }
+  if ($('#select-all')) $('#select-all').hidden = !verificationId || importApplied;
+  if ($('#clear-selection')) $('#clear-selection').hidden = !verificationId || importApplied;
+  if ($('#toggle-all')) {
+    $('#toggle-all').hidden = !verificationId || importApplied;
+    $('#toggle-all').checked = total > 0 && selected === total;
+    $('#toggle-all').indeterminate = selected > 0 && selected < total;
+  }
+  if ($('#apply-import')) {
+    $('#apply-import').disabled = selected === 0 || importApplied;
+  }
+  if (dsvBetaSettings?.enabled && verificationId && $('#verify-dsv-beta')) {
+    $('#verify-dsv-beta').hidden = selected === 0;
+  }
 }
 
 function showApplyFeedback(summary) {
@@ -415,6 +476,7 @@ function renderShipmentDsvTimeline(timeline, trackingUrl) {
 }
 
 const DSV_STATUS_ORDER = ['Prenotata', 'In transito', 'Centro di distribuzione', 'In consegna', 'Consegnata', 'Non verificato', 'Da verificare manualmente', 'Spedizione non trovata', 'Intervento manuale richiesto', 'Eccezione DSV', 'Errore beta'];
+const DSV_INTERNAL_ONLY_STATUSES = new Set(['Intervento manuale richiesto', 'Eccezione DSV']);
 
 function dsvFilterKind(status) {
   const normalized = status.toLocaleLowerCase('it-IT');
@@ -433,29 +495,25 @@ function renderDsvStatusFilters(counts = {}, archivedCount = 0, attentionTotal =
   const activeStatus = $('#control-dsv-filter')?.value || '';
   const exceptionActive = Boolean($('#control-exceptions')?.checked);
   const total = Object.values(counts).reduce((sum, count) => sum + Number(count || 0), 0);
-  const statuses = Object.keys(counts).filter((status) => counts[status] > 0).sort((left, right) => {
+  const statuses = [...new Set([...DSV_STATUS_ORDER, ...Object.keys(counts)])]
+    .filter((status) => !DSV_INTERNAL_ONLY_STATUSES.has(status))
+    .sort((left, right) => {
     const leftIndex = DSV_STATUS_ORDER.indexOf(left);
     const rightIndex = DSV_STATUS_ORDER.indexOf(right);
     return (leftIndex < 0 ? 999 : leftIndex) - (rightIndex < 0 ? 999 : rightIndex) || left.localeCompare(right, 'it');
-  });
+    });
   const select = $('#control-dsv-filter');
   statuses.forEach((status) => { if (![...select.options].some((option) => option.value === status)) select.add(new Option(status, status)); });
   if (![...select.options].some((option) => option.value === 'Archiviate')) select.add(new Option('Archiviate', 'Archiviate'));
-  const primaryStatuses = ['Prenotata', 'In transito', 'Centro di distribuzione', 'In consegna', 'Consegnata'];
-  const attentionStatuses = statuses.filter((status) => ['attention', 'incomplete'].includes(dsvFilterKind(status)));
-  const secondaryStatuses = statuses.filter((status) => !primaryStatuses.includes(status) && !attentionStatuses.includes(status));
-  const attentionCount = attentionTotal ?? attentionStatuses.reduce((sum, status) => sum + Number(counts[status] || 0), 0);
-  const secondaryCount = secondaryStatuses.reduce((sum, status) => sum + Number(counts[status] || 0), 0);
-  const secondaryActive = secondaryStatuses.includes(activeStatus);
-  const primaryButtons = primaryStatuses.filter((status) => counts[status] > 0).map((status) => `<button type="button" class="control-quick-filter ${dsvFilterKind(status)} ${activeStatus === status && !exceptionActive ? 'active' : ''}" data-dsv-status="${escapeHtml(status)}"><span>${escapeHtml(status)}</span><strong>${counts[status]}</strong></button>`).join('');
-  const attentionButton = attentionCount
-    ? `<button type="button" class="control-quick-filter attention ${exceptionActive ? 'active' : ''}" data-control-filter="attention"><span>Richiedono attenzione</span><strong>${attentionCount}</strong></button>`
-    : '';
-  const secondaryMenu = secondaryCount
-    ? `<select id="control-other-status" class="control-other-select${secondaryActive ? ' active' : ''}" aria-label="Filtra per altri stati DSV"><option value="">Altri stati · ${secondaryCount}</option>${secondaryStatuses.map((status) => `<option value="${escapeHtml(status)}"${activeStatus === status ? ' selected' : ''}>${escapeHtml(status)} · ${counts[status]}</option>`).join('')}</select>`
-    : '';
-  const archivedButton = `<button type="button" class="control-quick-filter archived ${activeStatus === 'Archiviate' ? 'active' : ''}" data-dsv-status="Archiviate" title="Visualizza solo spedizioni archiviate"><span>Archiviate</span><strong>${archivedCount}</strong></button>`;
-  bar.innerHTML = `<span class="filter-bar-label">Stati DSV</span><button type="button" class="control-quick-filter ${!activeStatus && !exceptionActive && controlMetricFilter === 'all' ? 'active' : ''}" data-control-filter="all"><span>Tutte</span><strong>${total}</strong></button>${primaryButtons}${attentionButton}${secondaryMenu}<span class="control-filter-spacer"></span>${archivedButton}`;
+  const statusButtons = statuses.map((status) => {
+    const count = Number(counts[status] || 0);
+    const active = activeStatus === status && !exceptionActive;
+    return `<button type="button" class="control-quick-filter ${dsvFilterKind(status)}${active ? ' active' : ''}${count === 0 ? ' zero' : ''}" data-dsv-status="${escapeHtml(status)}" aria-pressed="${active}" title="${escapeHtml(status)}: ${count} spedizioni"><span>${escapeHtml(status)}</span><strong>${count}</strong></button>`;
+  }).join('');
+  const allActive = !activeStatus && !exceptionActive && controlMetricFilter === 'all';
+  const archivedActive = activeStatus === 'Archiviate';
+  const archivedButton = `<button type="button" class="control-quick-filter archived${archivedActive ? ' active' : ''}${archivedCount === 0 ? ' zero' : ''}" data-dsv-status="Archiviate" aria-pressed="${archivedActive}" title="Spedizioni archiviate: ${archivedCount}"><span>Archiviate</span><strong>${archivedCount}</strong></button>`;
+  bar.innerHTML = `<span class="filter-bar-label">Stati DSV</span><button type="button" class="control-quick-filter${allActive ? ' active' : ''}" data-control-filter="all" aria-pressed="${allActive}"><span>Tutte</span><strong>${total}</strong></button>${statusButtons}${archivedButton}`;
 }
 
 function caseBadge(status) {
@@ -467,11 +525,6 @@ function caseBadge(status) {
 function renderControlMappingAlert(counts = {}) {
   const alert = $('#control-mapping-alert');
   if (!alert) return;
-  if ($('#control-dsv-filter')?.value === 'Archiviate') {
-    alert.hidden = true;
-    alert.innerHTML = '';
-    return;
-  }
   const mappableStatuses = ['Prenotata', 'In transito', 'Centro di distribuzione', 'In consegna', 'Consegnata'];
   const missing = mappableStatuses
     .filter((status) => Number(counts[status] || 0) > 0 && !dsvStateMappings[status])
@@ -484,14 +537,14 @@ function renderControlMappingAlert(counts = {}) {
   const affected = missing.reduce((sum, item) => sum + item.count, 0);
   const summary = missing.length === 1
     ? `Mappatura mancante per “${missing[0].status}”: ${affected} spedizion${affected === 1 ? 'e' : 'i'} interessat${affected === 1 ? 'a' : 'e'}.`
-    : `${missing.length} stati DSV senza mappatura interessano ${affected} spedizioni.`;
+    : `${missing.length} stati DSV senza mappatura (${missing.map((item) => item.status).join(', ')}) interessano ${affected} spedizioni.`;
   alert.innerHTML = `<span><strong>Mappatura stati incompleta.</strong> ${escapeHtml(summary)}</span><button id="configure-control-mappings" type="button" class="secondary">Configura mappature</button>`;
   alert.hidden = false;
 }
 
 function updateControlFilterUi() {
   const hasFilters = Boolean(
-    ($('#control-search-query')?.value || '').trim()
+    ($('#global-tracking-query')?.value || '').trim()
     || $('#control-dsv-filter')?.value
     || controlPrestaStateFilter
     || $('#control-date-filter')?.value
@@ -590,7 +643,7 @@ function renderControlCenter(data) {
   const activeDsvFilter = $('#control-dsv-filter')?.value || '';
   $('#control-metrics').innerHTML = [
     ['Monitorate', data.total || 0, 'neutral', 'all'], ['In movimento', moving, 'transit', 'moving'],
-    ['Consegnate', counts.Consegnata || 0, 'delivered', 'delivered'], ['Da gestire', attention, 'attention', 'attention'],
+    ['Consegnate', counts.Consegnata || 0, 'delivered', 'delivered'], ['Richiedono attenzione', attention, 'attention', 'attention'],
   ].map(([label, value, kind, filter]) => {
     const active = controlMetricFilter === filter && (filter !== 'all' || (!activeDsvFilter && !$('#control-exceptions')?.checked));
     return `<button type="button" class="control-metric ${kind}${active ? ' active' : ''}" data-metric-filter="${filter}" aria-pressed="${active}"><strong>${value}</strong><span>${label}</span></button>`;
@@ -647,6 +700,8 @@ function updateControlSelectionUi(records = []) {
     $('#control-bulk-manage').disabled = selected === 0;
     const bulkSyncBtn = $('#control-bulk-sync-prestashop');
     if (bulkSyncBtn) bulkSyncBtn.disabled = selected === 0;
+    const bulkTrackingBtn = $('#control-bulk-sync-tracking');
+    if (bulkTrackingBtn) bulkTrackingBtn.disabled = selected === 0;
   }
   const batchCount = Math.ceil(selected / batchSize);
   const summary = !dsvBetaSettings?.enabled
@@ -1392,6 +1447,8 @@ function renderCronStatus(status) {
   }
 
   cronLastIsRunning = Boolean(status.isRunning);
+  updateSettingsHealth();
+  updateCronImpactPreview();
 
   const summaryList = $('#cron-summary-list');
   if (summaryList) {
@@ -1461,6 +1518,9 @@ function setupCronSection() {
         msg.textContent = 'Impostazioni cron salvate con successo!';
       }
       showFloatingToast('Configurazione cron salvata!', 'success');
+      markSettingsClean('automation');
+      updateSettingsHealth();
+      updateCronImpactPreview();
       renderCronStatus(res.status);
     } catch (err) {
       if (msg) {
@@ -1497,6 +1557,193 @@ function setupCronSection() {
       alert(`Errore: ${err.message}`);
     } finally {
       stopBtn.disabled = false;
+    }
+  });
+}
+
+
+const settingsSectionLabels = {
+  connections: 'Connessioni',
+  automation: 'Automazione',
+  mappings: 'Mappature',
+  notifications: 'Notifiche',
+  data: 'Dati e backup',
+};
+let activeSettingsSection = 'connections';
+const dirtySettingsSections = new Set();
+const settingsTestState = {
+  prestashop: null,
+  camofox: null,
+  notifications: null,
+};
+
+function settingsTimestamp() {
+  return new Date().toLocaleString('it-IT', { dateStyle: 'short', timeStyle: 'short' });
+}
+
+function setSettingsTestResult(kind, successful, detail) {
+  settingsTestState[kind] = { successful, detail, at: settingsTimestamp() };
+  const element = $(`[data-settings-test-result="${kind}"]`);
+  if (element) {
+    element.className = `settings-test-result ${successful ? 'success' : 'error'}`;
+    const icon = successful
+      ? '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3.5 8.5 6.5 11.5 12.5 4.5"/></svg>'
+      : '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6"/><line x1="8" y1="5" x2="8" y2="8"/><line x1="8" y1="11" x2="8.01" y2="11"/></svg>';
+    element.innerHTML = `<strong style="display:inline-flex;align-items:center;gap:6px;">${icon} ${successful ? 'Verifica riuscita' : 'Verifica non riuscita'}</strong><span>${escapeHtml(detail)}</span><time>${escapeHtml(settingsTestState[kind].at)}</time>`;
+    element.hidden = false;
+  }
+  updateSettingsHealth();
+}
+
+function markSettingsDirty(section) {
+  if (!section) return;
+  dirtySettingsSections.add(section);
+  document.querySelectorAll(`[data-settings-section="${section}"]`).forEach((element) => element.classList.add('has-unsaved-changes'));
+  updateSettingsDirtyBar();
+}
+
+function markSettingsClean(section) {
+  dirtySettingsSections.delete(section);
+  document.querySelectorAll(`[data-settings-section="${section}"]`).forEach((element) => element.classList.remove('has-unsaved-changes'));
+  updateSettingsDirtyBar();
+}
+
+function updateSettingsDirtyBar() {
+  const bar = $('#settings-dirty-bar');
+  if (!bar) return;
+  const sections = [...dirtySettingsSections];
+  bar.hidden = sections.length === 0;
+  const label = $('#settings-dirty-label');
+  if (label) label.textContent = sections.length === 1
+    ? `Modifiche non salvate in ${settingsSectionLabels[sections[0]]}`
+    : `Modifiche non salvate in ${sections.length} sezioni`;
+  const action = $('#settings-dirty-action');
+  if (action) action.dataset.settingsTarget = sections[0] || '';
+  document.querySelectorAll('[data-settings-nav]').forEach((button) => {
+    const marker = button.querySelector('.settings-nav-dirty');
+    if (marker) marker.hidden = !dirtySettingsSections.has(button.dataset.settingsNav);
+  });
+}
+
+function settingsStatus(kind, state, label, detail, action) {
+  const item = $(`[data-health-item="${kind}"]`);
+  if (!item) return;
+  item.dataset.state = state;
+  item.querySelector('.settings-health-state').textContent = label;
+  item.querySelector('.settings-health-detail').textContent = detail;
+  const button = item.querySelector('button');
+  if (button) {
+    button.textContent = action.label;
+    button.dataset.settingsTarget = action.target;
+  }
+}
+
+function updateSettingsHealth() {
+  const prestaConfigured = $('#config-form')?.dataset.configured === 'true';
+  const prestaTest = settingsTestState.prestashop;
+  settingsStatus('prestashop', prestaTest?.successful ? 'ready' : prestaConfigured ? 'check' : 'off', prestaTest?.successful ? 'Operativo' : prestaConfigured ? 'Da verificare' : 'Non configurato', prestaTest?.successful ? `Permessi verificati · ${prestaTest.at}` : prestaConfigured ? 'Credenziali salvate, test permessi richiesto' : 'Inserisci URL e chiave Webservice', { label: prestaConfigured ? 'Verifica' : 'Configura', target: 'connections' });
+
+  const camofoxEnabled = Boolean($('#dsv-beta-enabled')?.checked);
+  const camofoxTest = settingsTestState.camofox;
+  settingsStatus('camofox', camofoxTest?.successful && camofoxEnabled ? 'ready' : camofoxEnabled ? 'check' : 'off', camofoxTest?.successful && camofoxEnabled ? 'Operativo' : camofoxEnabled ? 'Da verificare' : 'Non attivo', camofoxTest?.successful && camofoxEnabled ? `Servizio raggiungibile · ${camofoxTest.at}` : camofoxEnabled ? 'Configurazione salvata, test locale richiesto' : 'Le verifiche DSV sono disabilitate', { label: camofoxEnabled ? 'Verifica' : 'Configura', target: 'connections' });
+
+  const cronEnabled = Boolean($('#cron-enabled')?.checked);
+  const cronBadge = $('#cron-badge-status')?.textContent?.trim();
+  settingsStatus('automation', cronEnabled ? 'ready' : 'off', cronEnabled ? 'Operativo' : 'Non attivo', cronEnabled ? (cronBadge || 'Controllo periodico pianificato') : 'Nessun controllo automatico pianificato', { label: cronEnabled ? 'Controlla' : 'Attiva', target: 'automation' });
+
+  const mappingSelects = [...document.querySelectorAll('.dsv-mapping-select')];
+  const mapped = mappingSelects.filter((select) => select.value).length;
+  const mappingReady = mappingSelects.length > 0 && mapped === mappingSelects.length;
+  settingsStatus('mappings', mappingReady ? 'ready' : mapped ? 'check' : 'off', mappingReady ? 'Operativo' : mapped ? 'Incompleto' : 'Non configurato', mappingSelects.length ? `${mapped} di ${mappingSelects.length} stati associati` : 'Carica il catalogo PrestaShop', { label: mappingReady ? 'Rivedi' : 'Completa', target: 'mappings' });
+
+  const tgReady = Boolean($('#notify-tg-enabled')?.checked && $('#notify-tg-token')?.value?.trim() && $('#notify-tg-chatid')?.value?.trim());
+  const emailReady = Boolean($('#notify-email-enabled')?.checked && $('#notify-email-host')?.value?.trim() && $('#notify-email-to')?.value?.trim());
+  const notificationReady = tgReady || emailReady;
+  const notificationTest = settingsTestState.notifications;
+  settingsStatus('notifications', notificationTest?.successful && notificationReady ? 'ready' : notificationReady ? 'check' : 'off', notificationTest?.successful && notificationReady ? 'Operativo' : notificationReady ? 'Da verificare' : 'Non configurato', notificationTest?.successful && notificationReady ? `Canale verificato · ${notificationTest.at}` : notificationReady ? 'Almeno un canale attivo, invia un test' : 'Attiva Telegram o Email', { label: notificationReady ? 'Verifica' : 'Configura', target: 'notifications' });
+
+  const readyCount = document.querySelectorAll('.settings-health-item[data-state="ready"]').length;
+  const summary = $('#settings-readiness-summary');
+  if (summary) summary.textContent = readyCount === 5 ? 'Sistema pronto per lavorare in autonomia' : `${readyCount} di 5 aree operative`;
+  const badge = $('#settings-readiness-badge');
+  if (badge) {
+    badge.dataset.state = readyCount === 5 ? 'ready' : readyCount >= 3 ? 'check' : 'off';
+    badge.textContent = readyCount === 5 ? 'Pronto' : readyCount >= 3 ? 'Da completare' : 'Configurazione richiesta';
+  }
+}
+
+function activateSettingsSection(section, { scroll = true, behavior = 'smooth' } = {}) {
+  if (!settingsSectionLabels[section]) return;
+  activeSettingsSection = section;
+  document.querySelectorAll('[data-settings-nav]').forEach((button) => {
+    const active = button.dataset.settingsNav === section;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+    if (active) button.setAttribute('aria-current', 'true'); else button.removeAttribute('aria-current');
+  });
+  document.querySelectorAll('[data-settings-section]').forEach((element) => element.classList.toggle('settings-section-active', element.dataset.settingsSection === section));
+  if (scroll) {
+    const nav = document.querySelector('.settings-section-nav');
+    if (nav) {
+      const navTop = nav.getBoundingClientRect().top + window.scrollY - 60;
+      if (window.scrollY > navTop + 80) {
+        window.scrollTo({ top: navTop, behavior });
+      }
+    }
+  }
+}
+
+function updateCronImpactPreview() {
+  const preview = $('#cron-impact-preview');
+  if (!preview) return;
+  const enabled = Boolean($('#cron-enabled')?.checked);
+  const interval = $('#cron-interval')?.selectedOptions?.[0]?.textContent || 'intervallo selezionato';
+  const batch = Number($('#cron-batch-size')?.value) || 25;
+  const minInterval = $('#cron-min-check-interval')?.selectedOptions?.[0]?.textContent || '';
+  const nightPause = Boolean($('#cron-night-pause')?.checked);
+  preview.innerHTML = enabled
+    ? `<strong>Impatto previsto</strong><span>${escapeHtml(interval)} · massimo ${batch} spedizioni per ciclo · ${escapeHtml(minInterval.toLocaleLowerCase('it-IT'))}${nightPause ? ' · pausa notturna attiva' : ''}.</span>`
+    : '<strong>Automazione disattivata</strong><span>Le verifiche partiranno solo manualmente finché non salvi il servizio come attivo.</span>';
+}
+
+function updateMappingFilter() {
+  const query = ($('#mapping-search')?.value || '').trim().toLocaleLowerCase('it-IT');
+  const incompleteOnly = Boolean($('#mapping-incomplete-only')?.checked);
+  const rows = [...document.querySelectorAll('.state-mapping-row')];
+  let visible = 0;
+  let incomplete = 0;
+  rows.forEach((row) => {
+    const select = row.querySelector('.dsv-mapping-select');
+    const missing = !select?.value;
+    if (missing) incomplete += 1;
+    const matches = (!query || row.textContent.toLocaleLowerCase('it-IT').includes(query)) && (!incompleteOnly || missing);
+    row.hidden = !matches;
+    if (matches) visible += 1;
+  });
+  const summary = $('#mapping-filter-summary');
+  if (summary) summary.textContent = `${visible} visibili · ${incomplete} non mappati`;
+  const applyButton = $('#apply-mapping-bulk');
+  if (applyButton) applyButton.disabled = !$('#mapping-bulk-state')?.value || visible === 0;
+}
+
+function setupMappingTools() {
+  $('#mapping-search')?.addEventListener('input', updateMappingFilter);
+  $('#mapping-incomplete-only')?.addEventListener('change', updateMappingFilter);
+  $('#mapping-bulk-state')?.addEventListener('change', updateMappingFilter);
+  $('#apply-mapping-bulk')?.addEventListener('click', () => {
+    const stateId = $('#mapping-bulk-state')?.value;
+    if (!stateId) return;
+    let changed = 0;
+    document.querySelectorAll('.state-mapping-row:not([hidden]) .dsv-mapping-select').forEach((select) => {
+      if (select.value !== stateId) {
+        select.value = stateId;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        changed += 1;
+      }
+    });
+    if (changed) {
+      markSettingsDirty('mappings');
+      tell('#state-mapping-message', `${changed} righe aggiornate. Salva la mappatura per confermare.`, 'warning');
     }
   });
 }
@@ -1696,8 +1943,12 @@ function setupWorkspace() {
     const actionGroup = document.createElement('div');
     actionGroup.className = 'settings-form-actions';
     if (testButton) actionGroup.append(testButton);
-    if (saveButton) actionGroup.append(saveButton);
+    if (saveButton) {
+      saveButton.textContent = 'Salva connessione';
+      actionGroup.append(saveButton);
+    }
     form?.append(actionGroup);
+    actionGroup.insertAdjacentHTML('afterend', '<div class="settings-test-result" data-settings-test-result="prestashop" role="status" aria-live="polite" hidden></div>');
     const emptyActions = [...connectionCard.querySelectorAll(':scope > .actions')].find((item) => !item.children.length);
     emptyActions?.remove();
   }
@@ -1723,16 +1974,31 @@ function setupWorkspace() {
     scheduleTitle.className = 'cron-panel-heading';
     scheduleTitle.innerHTML = '<h3>Pianificazione</h3><p>Definisci frequenza, volume e fascia oraria dei controlli.</p>';
     cronForm?.prepend(scheduleTitle);
+    const impactPreview = document.createElement('div');
+    impactPreview.id = 'cron-impact-preview';
+    impactPreview.className = 'cron-impact-preview';
+    cronForm?.querySelector('.cron-fields')?.insertAdjacentElement('afterend', impactPreview);
   }
 
   if (dsvBetaCard && importCard) {
     const betaTitle = dsvBetaCard.querySelector('h3');
-    if (betaTitle) betaTitle.textContent = 'Connessione DSV via Camoufox';
+    if (betaTitle) betaTitle.textContent = 'Verifica pubblica DSV via Camoufox';
     const betaDescription = dsvBetaCard.querySelector('.beta-heading p');
-    if (betaDescription) betaDescription.textContent = 'Configura il browser locale usato per leggere lo stato pubblico delle spedizioni DSV.';
+    if (betaDescription) betaDescription.textContent = 'Configura il browser locale usato per leggere lo stato delle spedizioni sul portale pubblico DSV.';
     const betaPill = dsvBetaCard.querySelector('.beta-pill');
-    if (betaPill) betaPill.textContent = 'SERVIZIO LOCALE';
+    if (betaPill) betaPill.textContent = 'PORTALE PUBBLICO';
     const betaConfig = dsvBetaCard.querySelector('.beta-config');
+    const betaSwitch = dsvBetaCard.querySelector('.beta-switch');
+    const betaHeading = dsvBetaCard.querySelector('.beta-heading');
+    const betaHeadingControls = document.createElement('div');
+    betaHeadingControls.className = 'camofox-heading-controls';
+    if (betaSwitch) betaHeadingControls.append(betaSwitch);
+    if (betaPill) betaHeadingControls.append(betaPill);
+    betaHeading?.append(betaHeadingControls);
+    const trackingUrlInput = $('#dsv-tracking-url');
+    trackingUrlInput?.insertAdjacentHTML('afterend', '<div class="tracking-url-anatomy" aria-label="Struttura URL tracking"><span>dsv.com</span><code>refNumber={tracking}</code><code>language_region=it-IT_IT</code></div>');
+    const trackingHint = trackingUrlInput?.parentElement?.querySelector('.field-hint');
+    if (trackingHint) trackingHint.innerHTML = 'Il valore <code>TRACKINGDAINSERIRE</code> viene sostituito automaticamente per ogni spedizione.';
     const speedPicker = document.createElement('fieldset');
     speedPicker.className = 'camofox-speed-picker';
     speedPicker.innerHTML = '<legend>Velocità delle verifiche</legend><div class="camofox-speed-options"><label class="camofox-speed-option"><input id="dsv-speed-safe" name="dsv-speed-profile" type="radio" value="safe" checked><span><strong>Affidabile <small>Consigliato</small></strong><span>Una nuova scheda per ogni spedizione e pause più ampie.</span></span></label><label class="camofox-speed-option"><input id="dsv-speed-fast" name="dsv-speed-profile" type="radio" value="fast"><span><strong>Rapido controllato</strong><span>Riutilizza la scheda e riduce le attese. Torna automaticamente alla modalità affidabile se DSV diventa instabile.</span></span></label></div><p class="camofox-speed-note">Entrambi i profili elaborano una sola spedizione alla volta. La modifica si applica dal ciclo successivo.</p>';
@@ -1749,10 +2015,137 @@ function setupWorkspace() {
     configMessage.className = 'message';
     configMessage.setAttribute('aria-live', 'polite');
     dsvBetaCard.append(configMessage);
+    dsvBetaCard.insertAdjacentHTML('beforeend', '<div class="settings-test-result" data-settings-test-result="camofox" role="status" aria-live="polite" hidden></div>');
   }
 
-  settingsDashboard.append(...settingsCards);
+  connectionCard?.setAttribute('data-settings-section', 'connections');
+  catalogCard?.setAttribute('data-settings-section', 'connections');
+  dsvBetaCard?.setAttribute('data-settings-section', 'connections');
+  cronCard?.setAttribute('data-settings-section', 'automation');
+  stateMapping.setAttribute('data-settings-section', 'mappings');
+  notificationCard.setAttribute('data-settings-section', 'notifications');
+  backupCard?.setAttribute('data-settings-section', 'data');
+
+  const overview = document.createElement('section');
+  overview.className = 'settings-overview';
+  overview.innerHTML = `
+    <div class="settings-overview-heading">
+      <div><h2>Stato del sistema</h2><p id="settings-readiness-summary">Verifica della configurazione in corso…</p></div>
+      <span id="settings-readiness-badge" class="settings-readiness-badge" data-state="off">Configurazione richiesta</span>
+    </div>
+    <div class="settings-health-grid">
+      ${[
+        ['prestashop', 'PrestaShop', 'connections'],
+        ['camofox', 'DSV / Camoufox', 'connections'],
+        ['automation', 'Automazione', 'automation'],
+        ['mappings', 'Mappature', 'mappings'],
+        ['notifications', 'Notifiche', 'notifications'],
+      ].map(([kind, label, target]) => `<article class="settings-health-item" data-health-item="${kind}" data-settings-target="${target}" data-state="off" tabindex="0" role="button" aria-label="Vai a sezione ${label}"><span class="settings-health-dot" aria-hidden="true"></span><div><strong>${label}</strong><span class="settings-health-state">Non configurato</span><small class="settings-health-detail">Verifica richiesta</small></div><button type="button" class="settings-health-action" data-settings-target="${target}">Configura</button></article>`).join('')}
+    </div>
+  `;
+
+  const sectionNav = document.createElement('nav');
+  sectionNav.className = 'settings-section-nav';
+  sectionNav.setAttribute('aria-label', 'Sezioni configurazione');
+  sectionNav.innerHTML = Object.entries(settingsSectionLabels).map(([key, label], index) => `<button type="button" data-settings-nav="${key}" aria-pressed="${index === 0 ? 'true' : 'false'}" class="${index === 0 ? 'active' : ''}"><span>${label}</span><span class="settings-nav-dirty" aria-label="Modifiche non salvate" hidden></span></button>`).join('');
+
+  const dirtyBar = document.createElement('div');
+  dirtyBar.id = 'settings-dirty-bar';
+  dirtyBar.className = 'settings-dirty-bar';
+  dirtyBar.hidden = true;
+  dirtyBar.innerHTML = '<span><strong id="settings-dirty-label">Modifiche non salvate</strong><small>Salva la sezione prima di uscire dalla configurazione.</small></span><button id="settings-dirty-action" type="button" class="secondary">Vai alla sezione</button>';
+
+  const makeSectionHeading = (section, title, description) => {
+    const heading = document.createElement('div');
+    heading.className = 'settings-section-heading';
+    heading.dataset.settingsSection = section;
+    heading.innerHTML = `<div><h2>${title}</h2><p>${description}</p></div>`;
+    return heading;
+  };
+  const connectionsHeading = makeSectionHeading('connections', 'Connessioni', 'Collega il negozio e il servizio locale che consulta il portale DSV.');
+  const automationHeading = makeSectionHeading('automation', 'Automazione', 'Definisci quando e con quale carico eseguire i controlli periodici.');
+  const mappingsHeading = makeSectionHeading('mappings', 'Mappature', 'Decidi come tradurre gli stati DSV negli stati ordine di PrestaShop.');
+  const notificationsHeading = makeSectionHeading('notifications', 'Notifiche', 'Scegli i canali e gli eventi che richiedono attenzione operativa.');
+  const dataHeading = makeSectionHeading('data', 'Dati e backup', 'Esporta l’archivio o ripristina una copia verificata.');
+
+  const mappingToolbar = document.createElement('div');
+  mappingToolbar.className = 'mapping-toolbar';
+  mappingToolbar.innerHTML = '<label class="mapping-search"><span class="sr-only">Cerca stato DSV</span><input id="mapping-search" type="search" placeholder="Cerca stato DSV…" autocomplete="off"></label><label class="mapping-incomplete-filter"><input id="mapping-incomplete-only" type="checkbox"> Solo non mappati</label><div class="mapping-bulk"><label><span>Assegna ai visibili</span><select id="mapping-bulk-state" aria-label="Stato PrestaShop da assegnare alle righe visibili"><option value="">Scegli stato…</option></select></label><button id="apply-mapping-bulk" type="button" class="secondary" disabled>Applica</button></div><span id="mapping-filter-summary" class="mapping-filter-summary" aria-live="polite"></span>';
+  stateMapping.querySelector('.control-heading')?.insertAdjacentElement('afterend', mappingToolbar);
+
+  notificationCard.querySelector('.notification-form-actions')?.insertAdjacentHTML('beforebegin', '<div class="settings-test-result" data-settings-test-result="notifications" role="status" aria-live="polite" hidden></div>');
+
+  settingsDashboard.append(
+    overview,
+    sectionNav,
+    connectionsHeading, connectionCard, catalogCard, dsvBetaCard,
+    automationHeading, cronCard,
+    mappingsHeading, stateMapping,
+    notificationsHeading, notificationCard,
+    dataHeading, backupCard,
+    dirtyBar,
+  );
   main.append(settingsDashboard);
+
+  sectionNav.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-settings-nav]');
+    if (button) {
+      event.preventDefault();
+      window.history.replaceState(null, '', `#settings/${button.dataset.settingsNav}`);
+      activateSettingsSection(button.dataset.settingsNav);
+    }
+  });
+  settingsDashboard.addEventListener('click', (event) => {
+    const copyBtn = event.target.closest('#copy-dsv-tracking-url');
+    if (copyBtn) {
+      event.preventDefault();
+      const input = document.querySelector('#dsv-tracking-url');
+      if (input && navigator.clipboard) {
+        navigator.clipboard.writeText(input.value).then(() => {
+          copyBtn.classList.add('copied');
+          const originalText = copyBtn.textContent;
+          copyBtn.textContent = 'Copiato!';
+          setTimeout(() => {
+            copyBtn.classList.remove('copied');
+            copyBtn.textContent = originalText;
+          }, 2000);
+        }).catch(() => {});
+      }
+      return;
+    }
+    const target = event.target.closest('[data-settings-target]');
+    if (target) {
+      window.history.replaceState(null, '', `#settings/${target.dataset.settingsTarget}`);
+      activateSettingsSection(target.dataset.settingsTarget);
+    }
+  });
+  settingsDashboard.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      const target = event.target.closest('[data-settings-target]');
+      if (target && !event.target.matches('input, select, textarea, button')) {
+        event.preventDefault();
+        window.history.replaceState(null, '', `#settings/${target.dataset.settingsTarget}`);
+        activateSettingsSection(target.dataset.settingsTarget);
+      }
+    }
+  });
+  settingsDashboard.addEventListener('input', (event) => {
+    const section = event.target.closest('[data-settings-section]')?.dataset.settingsSection;
+    const persistsImmediately = event.target.closest('.settings-catalog-card') || event.target.matches('#mapping-search') || section === 'data';
+    if (section && !persistsImmediately) markSettingsDirty(section);
+    updateSettingsHealth();
+    updateCronImpactPreview();
+  });
+  settingsDashboard.addEventListener('change', (event) => {
+    const section = event.target.closest('[data-settings-section]')?.dataset.settingsSection;
+    const persistsImmediately = event.target.closest('.settings-catalog-card') || event.target.matches('#mapping-incomplete-only, #mapping-bulk-state') || section === 'data';
+    if (section && !persistsImmediately) markSettingsDirty(section);
+    updateSettingsHealth();
+    updateCronImpactPreview();
+  });
+  activateSettingsSection('connections', { scroll: false });
+  updateCronImpactPreview();
+  updateSettingsHealth();
   const history = document.createElement('section');
   history.className = 'card workspace-view'; history.dataset.view = 'history'; history.id = 'history-view'; history.hidden = true;
   history.innerHTML = `
@@ -1885,6 +2278,12 @@ function setupWorkspace() {
       if (event.target === helpDialog) helpDialog.close?.();
     });
   }
+  setupMappingTools();
+  window.addEventListener('beforeunload', (event) => {
+    if (!dirtySettingsSections.size) return;
+    event.preventDefault();
+    event.returnValue = '';
+  });
   setupControlWorkspace();
   window.addEventListener('hashchange', () => showView(location.hash.slice(1) || 'control'));
 }
@@ -1909,19 +2308,18 @@ function setupControlWorkspace() {
   if (!$('#control-presta-filter-menu')) document.body.insertAdjacentHTML('beforeend', '<div id="control-presta-filter-menu" class="control-column-filter-menu" role="menu" aria-label="Filtra per stato PrestaShop" hidden></div>');
   const initialEmptyCell = card.querySelector('#control-table tbody .control-empty');
   if (initialEmptyCell) initialEmptyCell.colSpan = card.querySelectorAll('#control-table thead th').length;
-  card.querySelector('.control-heading > div').insertAdjacentHTML('beforeend', '<div class="control-meta"><span id="control-service-status" class="control-service-status" data-state="off">DSV tracking non attivo</span><span id="control-last-sync" class="control-last-sync" aria-live="polite"></span></div>');
+  card.querySelector('.control-heading > div').insertAdjacentHTML('beforeend', '<div class="control-meta"><span id="control-service-status" class="control-service-status" data-state="off" role="status" aria-live="polite">DSV tracking non attivo</span><span id="control-last-sync" class="control-last-sync" aria-live="polite"></span></div>');
   card.querySelector('.control-filters').insertAdjacentHTML('beforebegin', '<nav id="control-quick-filters" class="control-quick-filters" aria-label="Filtra per stato DSV"><span class="filter-bar-label">Stati DSV</span><button type="button" class="control-quick-filter active" data-dsv-status=""><span>Tutte</span><strong>0</strong></button></nav>');
-  card.querySelector('.control-filters').insertAdjacentHTML('afterbegin', '<label class="control-search-field"><span class="sr-only">Cerca spedizione o ordine</span><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg><input id="control-search-query" type="search" placeholder="Cerca tracking, riferimento o ID ordine" autocomplete="off"></label>');
   card.querySelector('.control-filters').insertAdjacentHTML('beforeend', '<label class="control-dsv-filter-label" hidden>Stato DSV<select id="control-dsv-filter"><option value="">Tutti gli esiti DSV</option><option>Prenotata</option><option>In transito</option><option>Centro di distribuzione</option><option>In consegna</option><option>Consegnata</option><option>Non verificato</option><option>Da verificare manualmente</option><option>Errore beta</option><option>Spedizione non trovata</option><option>Intervento manuale richiesto</option><option>Eccezione DSV</option><option value="Archiviate">Archiviate</option></select></label><div class="control-filters-right"><label class="control-date-label"><span>Controllato dal</span><input id="control-date-filter" type="date"></label><button id="control-clear-filters" type="button" class="secondary control-clear-filters" hidden>Pulisci filtri</button></div>');
   card.querySelector('.control-filters').insertAdjacentHTML('afterend', '<div id="control-mapping-alert" class="control-mapping-alert" hidden></div>');
-  card.querySelector('.control-filters').insertAdjacentHTML('afterend', '<div id="control-bulk-bar" class="control-bulk-bar" hidden><strong id="control-bulk-count">0 selezionate</strong><span>Shift + clic seleziona un intervallo</span><button id="control-bulk-verify" type="button">Verifica DSV</button><button id="control-bulk-sync-prestashop" type="button" class="secondary">Allinea stato PrestaShop</button><button id="control-bulk-export" type="button" class="secondary">Esporta CSV</button><button id="control-bulk-manage" type="button" class="secondary">Segna in lavorazione</button><button id="control-bulk-clear" type="button" class="secondary">Deseleziona</button></div>');
+  card.querySelector('.control-filters').insertAdjacentHTML('afterend', '<div id="control-bulk-bar" class="control-bulk-bar" hidden><strong id="control-bulk-count">0 selezionate</strong><span>Shift + clic seleziona un intervallo</span><button id="control-bulk-verify" type="button">Verifica DSV</button><button id="control-bulk-sync-prestashop" type="button" class="secondary">Allinea stato PrestaShop</button><button id="control-bulk-sync-tracking" type="button" class="secondary"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 8.5v4a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-4M8 1.5v8M5 6.5l3 3 3-3"/></svg><span>Invia tracking a PrestaShop</span></button><button id="control-bulk-export" type="button" class="secondary">Esporta CSV</button><button id="control-bulk-manage" type="button" class="secondary">Segna in lavorazione</button><button id="control-bulk-clear" type="button" class="secondary">Deseleziona</button></div>');
   $('#control-dsv-filter').addEventListener('change', () => { controlPage = 1; refreshControlCenter(); });
   $('#control-date-filter').addEventListener('change', () => { controlPage = 1; refreshControlCenter(); });
-  $('#control-search-query').addEventListener('input', () => { $('#global-tracking-query').value = $('#control-search-query').value; controlPage = 1; clearTimeout(window.controlSearchTimer); window.controlSearchTimer = setTimeout(refreshControlCenter, 300); });
   $('#control-clear-filters').addEventListener('click', () => { if ($('#global-tracking-query')) $('#global-tracking-query').value = ''; if ($('#control-search-query')) $('#control-search-query').value = ''; if ($('#control-dsv-filter')) $('#control-dsv-filter').value = ''; if ($('#control-date-filter')) $('#control-date-filter').value = ''; if ($('#control-exceptions')) $('#control-exceptions').checked = false; controlMetricFilter = 'all'; controlPrestaStateFilter = ''; closeControlPrestaFilter(); controlPage = 1; refreshControlCenter(); });
   $('#control-bulk-clear').addEventListener('click', () => { controlSelectedTrackingNumbers.clear(); lastControlSelectedTrackingNumber = ''; refreshControlCenter(); });
   $('#control-bulk-verify').addEventListener('click', () => $('#verify-control-selected').click());
   $('#control-bulk-sync-prestashop').addEventListener('click', openBulkPrestaShopDialog);
+  $('#control-bulk-sync-tracking').addEventListener('click', openBulkTrackingDialog);
   $('#control-bulk-export').addEventListener('click', exportSelectedControlRows);
   $('#control-bulk-manage').addEventListener('click', markSelectedAsWorking);
   const tableWrap = card.querySelector('.table-wrap');
@@ -1972,6 +2370,24 @@ function setupControlWorkspace() {
     }
   });
   document.body.insertAdjacentHTML('beforeend', '<dialog id="prestashop-state-dialog" class="prestashop-state-dialog" aria-labelledby="prestashop-state-title"><div id="prestashop-state-form-wrap"><form id="prestashop-state-form"><div class="prestashop-dialog-heading"><div><span>Aggiornamento ordine</span><h3 id="prestashop-state-title">Allinea stato PrestaShop</h3></div><button id="close-prestashop-state" type="button" class="detail-close" aria-label="Chiudi"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg></button></div><div id="prestashop-state-comparison" class="prestashop-state-comparison"></div><label>Nuovo stato PrestaShop<select id="prestashop-target-state" required><option value="">Caricamento stati…</option></select></label><p class="prestashop-dialog-note">Verrà creato un nuovo evento nello storico dell’ordine. L’email al cliente resterà disattivata.</p><p id="prestashop-state-message" class="message" aria-live="polite"></p><div class="prestashop-dialog-actions"><button id="cancel-prestashop-state" type="button" class="secondary">Annulla</button><button id="confirm-prestashop-state" type="submit">Aggiorna PrestaShop</button></div></form></div><div id="prestashop-state-success-wrap" class="prestashop-state-success-card" hidden><div class="prestashop-success-icon-ring"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg></div><div class="prestashop-success-content"><span class="prestashop-success-eyebrow">Operazione completata</span><h3 class="prestashop-success-title">Stato PrestaShop aggiornato!</h3><div id="prestashop-success-badge-slot" class="prestashop-success-badge-slot"></div><p id="prestashop-success-desc" class="prestashop-success-desc"></p></div><div class="prestashop-timer-bar-track"><div id="prestashop-timer-bar-fill" class="prestashop-timer-bar-fill"></div></div><div class="prestashop-dialog-actions prestashop-success-actions"><button id="prestashop-success-close-btn" type="button" class="secondary prestashop-quick-close">Chiudi subito</button></div></div></dialog><dialog id="prestashop-bulk-dialog" class="prestashop-state-dialog prestashop-bulk-dialog" aria-labelledby="prestashop-bulk-title"><div id="prestashop-bulk-form-wrap" class="prestashop-bulk-form-wrap"><div class="prestashop-dialog-heading"><div><span>Aggiornamento massivo ordini</span><h3 id="prestashop-bulk-title">Allinea stati PrestaShop</h3></div><button id="close-prestashop-bulk" type="button" class="detail-close" aria-label="Chiudi"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg></button></div><label class="prestashop-bulk-select-label">Modalità di allineamento stato PrestaShop<select id="prestashop-bulk-state-select" class="prestashop-bulk-state-select"><option value="auto">⚡ Mappatura automatica DSV (consigliata)</option><optgroup id="prestashop-bulk-forced-group" label="Oppure forza uno stato PrestaShop per tutte"></optgroup></select></label><div id="prestashop-bulk-forced-notice" class="prestashop-bulk-forced-notice" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x2="12.01" y1="17" y2="17"/></svg><span><strong>Modalità forzata:</strong> le regole basate sullo stato DSV vengono ignorate. Tutte le spedizioni con ordine verranno impostate sullo stato selezionato.</span></div><div id="prestashop-bulk-preview-content"></div><p class="prestashop-dialog-note">Come per l’aggiornamento singolo, verrà creato un nuovo evento nello storico di ciascun ordine. L’email al cliente resterà disattivata.</p><p id="prestashop-bulk-message" class="message" aria-live="polite"></p><div class="prestashop-dialog-actions"><button id="cancel-prestashop-bulk" type="button" class="secondary">Annulla</button><button id="confirm-prestashop-bulk" type="button">Conferma allineamento</button></div></div><div id="prestashop-bulk-progress-wrap" class="prestashop-bulk-progress-wrap" hidden><svg class="prestashop-bulk-progress-spinner" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"></circle><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"></path></svg><h3 class="prestashop-bulk-progress-title">Allineamento PrestaShop in corso…</h3><div class="prestashop-bulk-progress-bar-wrap"><div class="prestashop-bulk-progress-labels"><span id="prestashop-bulk-progress-text">0 di 0</span><span id="prestashop-bulk-progress-percent">0%</span></div><div class="prestashop-bulk-progress-track"><div id="prestashop-bulk-progress-bar" class="prestashop-bulk-progress-bar"></div></div></div><p id="prestashop-bulk-progress-info" class="prestashop-bulk-progress-info">Preparazione aggiornamenti…</p></div><div id="prestashop-bulk-success-wrap" class="prestashop-state-success-card" hidden><div class="prestashop-success-icon-ring"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg></div><div class="prestashop-success-content"><span class="prestashop-success-eyebrow">Operazione completata</span><h3 class="prestashop-success-title" id="prestashop-bulk-success-title">Allineamento completato!</h3><p id="prestashop-bulk-success-desc" class="prestashop-success-desc"></p><div id="prestashop-bulk-errors-box" class="prestashop-bulk-errors" hidden></div></div><div class="prestashop-timer-bar-track"><div id="prestashop-bulk-timer-bar-fill" class="prestashop-timer-bar-fill"></div></div><div class="prestashop-dialog-actions prestashop-success-actions"><button id="prestashop-bulk-success-close-btn" type="button" class="secondary prestashop-quick-close">Chiudi subito</button></div></div></dialog>');
+  document.body.insertAdjacentHTML('beforeend', `
+    <dialog id="control-bulk-tracking-dialog" class="prestashop-state-dialog control-bulk-tracking-dialog" aria-labelledby="control-bulk-tracking-title">
+      <div id="control-bulk-tracking-form" class="control-bulk-tracking-form">
+        <div class="prestashop-dialog-heading"><div><h3 id="control-bulk-tracking-title">Invia tracking a PrestaShop</h3><p>Controlla l’impatto prima di aggiornare gli ordini selezionati.</p></div><button id="close-control-bulk-tracking" type="button" class="detail-close" aria-label="Chiudi"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg></button></div>
+        <div class="control-bulk-tracking-body">
+          <section class="control-bulk-impact" aria-labelledby="control-bulk-impact-title"><h4 id="control-bulk-impact-title">Impatto dell’operazione</h4><div id="control-bulk-tracking-kpis" class="control-bulk-impact-grid"></div><p id="control-bulk-tracking-summary">Nessun ordine verrà modificato.</p></section>
+          <label class="control-bulk-option"><input id="control-bulk-tracking-protect" type="checkbox" checked><span><strong>Non sovrascrivere tracking differenti <em>Consigliato</em></strong><small>Gli ordini che contengono già un altro tracking resteranno invariati.</small></span></label>
+          <fieldset class="control-bulk-carrier-mode"><legend>Corriere</legend><label><input type="radio" name="control-bulk-carrier-mode" value="preserve" checked><span><strong>Mantieni il corriere attuale</strong><small>Modifica soltanto il tracking.</small></span></label><label><input type="radio" name="control-bulk-carrier-mode" value="change"><span><strong>Imposta lo stesso corriere sugli ordini aggiornati</strong><small>Usa anche corrieri presenti ma disattivati.</small></span></label></fieldset>
+          <label id="control-bulk-tracking-carrier-wrap" class="control-bulk-carrier-wrap" hidden>Corriere PrestaShop<select id="control-bulk-tracking-carrier"><option value="">Caricamento corrieri…</option></select><small id="control-bulk-tracking-carrier-status"></small></label>
+          <section class="control-bulk-review" aria-labelledby="control-bulk-review-title"><div class="control-bulk-review-heading"><h4 id="control-bulk-review-title">Revisione spedizioni</h4><div id="control-bulk-tracking-filters" class="control-bulk-tracking-filters" aria-label="Filtra spedizioni"></div></div><div id="control-bulk-tracking-preview" class="control-bulk-tracking-preview" role="list"></div></section>
+          <p id="control-bulk-tracking-message" class="message" aria-live="polite"></p>
+        </div>
+        <div class="prestashop-dialog-actions control-bulk-tracking-actions"><p id="control-bulk-tracking-footer-note">Gli ordini già sincronizzati non verranno modificati.</p><button id="cancel-control-bulk-tracking" type="button" class="secondary">Annulla</button><button id="confirm-control-bulk-tracking" type="button">Nessun aggiornamento necessario</button></div>
+      </div>
+      <div id="control-bulk-tracking-progress" class="control-bulk-tracking-result" hidden aria-live="polite"><h3>Invio tracking in corso…</h3><div class="control-bulk-progress-head"><span id="control-bulk-tracking-progress-text">0 di 0</span><strong id="control-bulk-tracking-progress-percent">0%</strong></div><div id="control-bulk-tracking-progress-track" class="control-bulk-progress-track" role="progressbar" aria-label="Avanzamento invio tracking" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="control-bulk-tracking-progress-bar"></div></div><p id="control-bulk-tracking-current" role="status"></p><div id="control-bulk-tracking-log" class="control-bulk-tracking-log" aria-label="Esiti elaborazione"></div><div class="prestashop-dialog-actions"><button id="stop-control-bulk-tracking" type="button" class="secondary">Interrompi dopo questa riga</button></div></div>
+      <div id="control-bulk-tracking-result" class="control-bulk-tracking-result" hidden role="status" aria-live="polite" tabindex="-1"><span class="prestashop-success-eyebrow">Operazione completata</span><h3 id="control-bulk-tracking-result-title">Tracking sincronizzati</h3><div id="control-bulk-tracking-result-kpis" class="control-bulk-tracking-result-kpis"></div><div id="control-bulk-tracking-errors" class="prestashop-bulk-errors" hidden></div><div class="prestashop-dialog-actions"><button id="retry-control-bulk-tracking" type="button" hidden>Riprova errori</button><button id="finish-control-bulk-tracking" type="button" class="secondary">Chiudi e aggiorna</button></div></div>
+    </dialog>`);
+  setupBulkTrackingDialog();
   document.body.insertAdjacentHTML('beforeend', `
     <dialog id="prestashop-link-dialog" class="prestashop-state-dialog prestashop-link-dialog" aria-labelledby="prestashop-link-title">
       <form id="prestashop-link-form">
@@ -2692,6 +3108,267 @@ async function executeBulkPrestaShopSync(actionableList) {
   prestashopBulkSuccessTimeout = setTimeout(finishAndUpdate, failCount > 0 ? 5500 : 2500);
 }
 
+function setupBulkTrackingDialog() {
+  const dialog = $('#control-bulk-tracking-dialog');
+  if (!dialog) return;
+  const close = () => { if (!bulkTrackingRunning && dialog.open) dialog.close(); };
+  $('#close-control-bulk-tracking')?.addEventListener('click', close);
+  $('#cancel-control-bulk-tracking')?.addEventListener('click', close);
+  dialog.addEventListener('cancel', (event) => { if (bulkTrackingRunning) event.preventDefault(); });
+  dialog.addEventListener('click', (event) => {
+    if (bulkTrackingRunning || event.target !== dialog) return;
+    const bounds = dialog.getBoundingClientRect();
+    if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) close();
+  });
+  document.querySelectorAll('input[name="control-bulk-carrier-mode"]').forEach((radio) => radio.addEventListener('change', () => {
+    $('#control-bulk-tracking-carrier-wrap').hidden = bulkTrackingCarrierMode() !== 'change';
+    renderBulkTrackingPreview();
+  }));
+  $('#control-bulk-tracking-protect')?.addEventListener('change', renderBulkTrackingPreview);
+  $('#control-bulk-tracking-carrier')?.addEventListener('change', renderBulkTrackingPreview);
+  $('#control-bulk-tracking-filters')?.addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-bulk-tracking-filter]');
+    if (!button) return;
+    bulkTrackingPreviewFilter = button.dataset.bulkTrackingFilter;
+    renderBulkTrackingPreview();
+  });
+  $('#control-bulk-tracking-kpis')?.addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-bulk-tracking-filter]');
+    if (!button) return;
+    bulkTrackingPreviewFilter = button.dataset.bulkTrackingFilter;
+    renderBulkTrackingPreview();
+  });
+  $('#control-bulk-tracking-preview')?.addEventListener('change', (event) => {
+    if (!event.target.matches('[data-bulk-tracking-include]')) return;
+    const tracking = event.target.dataset.bulkTrackingInclude;
+    if (event.target.checked) bulkTrackingExcluded.delete(tracking);
+    else bulkTrackingExcluded.add(tracking);
+    renderBulkTrackingPreview();
+  });
+  $('#confirm-control-bulk-tracking')?.addEventListener('click', () => executeBulkTrackingSync(bulkTrackingActionableRows()));
+  $('#retry-control-bulk-tracking')?.addEventListener('click', () => executeBulkTrackingSync([...bulkTrackingRetryRows]));
+  $('#stop-control-bulk-tracking')?.addEventListener('click', (event) => {
+    bulkTrackingRunning = false;
+    event.currentTarget.disabled = true;
+    event.currentTarget.textContent = 'Interruzione richiesta…';
+  });
+  $('#finish-control-bulk-tracking')?.addEventListener('click', async () => {
+    dialog.close();
+    await refreshControlCenter();
+  });
+}
+
+function bulkTrackingRows() {
+  return controlRecords.filter((row) => controlSelectedTrackingNumbers.has(row.trackingNumber));
+}
+
+function bulkTrackingCarrierMode() {
+  return document.querySelector('input[name="control-bulk-carrier-mode"]:checked')?.value || 'preserve';
+}
+
+function bulkTrackingClassification(row) {
+  if (!row.orderId && !row.orderReference) return { kind: 'unlinked', label: 'Ordine non collegato', detail: 'Escluso dall’invio' };
+  const existing = String(row.existingTracking || '').trim();
+  const tracking = String(row.trackingNumber || '').trim();
+  const conflict = Boolean(existing && existing !== tracking);
+  if (conflict) return { kind: 'conflict', label: 'Tracking differente', detail: `Presente: ${existing}` };
+  const changeCarrier = bulkTrackingCarrierMode() === 'change';
+  const carrierId = String($('#control-bulk-tracking-carrier')?.value || '').trim();
+  const carrierAligned = carrierId && String(row.prestaCarrierId || '').trim() === carrierId;
+  if (existing === tracking && tracking && (!changeCarrier || carrierAligned)) return { kind: 'aligned', label: 'Già sincronizzato', detail: 'Nessuna modifica' };
+  if (existing === tracking && changeCarrier) return { kind: 'ready', label: 'Corriere da allineare', detail: 'Tracking già presente' };
+  return { kind: 'ready', label: 'Tracking da inviare', detail: '' };
+}
+
+function bulkTrackingActionableRows() {
+  const protect = Boolean($('#control-bulk-tracking-protect')?.checked);
+  return bulkTrackingRows().filter((row) => {
+    if (bulkTrackingExcluded.has(row.trackingNumber)) return false;
+    const classification = bulkTrackingClassification(row);
+    return classification.kind === 'ready' || (classification.kind === 'conflict' && !protect);
+  });
+}
+
+function renderBulkTrackingPreview() {
+  const rows = bulkTrackingRows();
+  const protect = Boolean($('#control-bulk-tracking-protect')?.checked);
+  const changeCarrier = bulkTrackingCarrierMode() === 'change';
+  const carrierSelect = $('#control-bulk-tracking-carrier');
+  const invalidCarrier = changeCarrier && !carrierSelect?.value;
+  const selectedCarrier = prestaShopCarrierCatalog.find((carrier) => String(carrier.id) === String(carrierSelect?.value || ''));
+  const carrierStatus = $('#control-bulk-tracking-carrier-status');
+  if (carrierStatus) carrierStatus.textContent = selectedCarrier
+    ? `${selectedCarrier.name}${selectedCarrier.active === false ? ' · Disattivato, ma associabile agli ordini esistenti.' : ' · Attivo.'}`
+    : 'Seleziona il corriere da associare agli ordini aggiornati.';
+  const classified = rows.map((row) => ({ row, classification: bulkTrackingClassification(row) }));
+  const counts = classified.reduce((result, item) => {
+    result[item.classification.kind] = (result[item.classification.kind] || 0) + 1;
+    return result;
+  }, { ready: 0, aligned: 0, conflict: 0, unlinked: 0 });
+  const actionable = bulkTrackingActionableRows();
+  const excludedCount = rows.filter((row) => bulkTrackingExcluded.has(row.trackingNumber)).length;
+
+  const summary = $('#control-bulk-tracking-summary');
+  if (summary) summary.textContent = actionable.length
+    ? `${actionable.length} ordin${actionable.length === 1 ? 'e verrà modificato' : 'i verranno modificati'}. ${rows.length - actionable.length} resteranno invariati.`
+    : 'Nessun ordine richiede un aggiornamento con le opzioni correnti.';
+  const kpis = $('#control-bulk-tracking-kpis');
+  if (kpis) kpis.innerHTML = [
+    ['ready', 'Da aggiornare', counts.ready],
+    ['aligned', 'Già sincronizzati', counts.aligned],
+    ['conflict', protect ? 'Protetti' : 'Da sovrascrivere', counts.conflict],
+    ['unlinked', 'Senza ordine', counts.unlinked],
+  ].map(([kind, label, count]) => `<button type="button" data-bulk-tracking-filter="${kind}" class="${bulkTrackingPreviewFilter === kind ? 'active' : ''}" aria-pressed="${bulkTrackingPreviewFilter === kind}"><strong>${count}</strong><span>${label}</span></button>`).join('');
+  const button = $('#confirm-control-bulk-tracking');
+  if (button) {
+    button.disabled = !actionable.length || invalidCarrier;
+    button.textContent = actionable.length
+      ? changeCarrier ? `Aggiorna ${actionable.length} ordin${actionable.length === 1 ? 'e' : 'i'} e corriere` : `Invia tracking a ${actionable.length} ordin${actionable.length === 1 ? 'e' : 'i'}`
+      : 'Nessun aggiornamento necessario';
+  }
+  const footerNote = $('#control-bulk-tracking-footer-note');
+  if (footerNote) footerNote.textContent = `${rows.length - actionable.length} non verranno modificati${excludedCount ? `, inclusi ${excludedCount} esclusi manualmente` : ''}.`;
+
+  const filters = $('#control-bulk-tracking-filters');
+  if (filters) filters.innerHTML = [
+    ['all', 'Tutte', rows.length],
+    ['ready', 'Da aggiornare', counts.ready],
+    ['attention', 'Attenzione', counts.conflict + counts.unlinked],
+    ['aligned', 'Già sincronizzati', counts.aligned],
+  ].map(([filter, label, count]) => `<button type="button" data-bulk-tracking-filter="${filter}" class="${bulkTrackingPreviewFilter === filter ? 'active' : ''}" aria-pressed="${bulkTrackingPreviewFilter === filter}">${label} <span>${count}</span></button>`).join('');
+
+  const preview = $('#control-bulk-tracking-preview');
+  if (!preview) return;
+  const visible = classified.filter(({ classification }) => {
+    if (bulkTrackingPreviewFilter === 'all') return true;
+    if (bulkTrackingPreviewFilter === 'attention') return ['conflict', 'unlinked'].includes(classification.kind);
+    return classification.kind === bulkTrackingPreviewFilter;
+  });
+  preview.innerHTML = visible.length ? visible.map(({ row, classification }) => {
+    const canInclude = classification.kind === 'ready' || (classification.kind === 'conflict' && !protect);
+    const included = canInclude && !bulkTrackingExcluded.has(row.trackingNumber);
+    return `<div class="bulk-preview-row" role="listitem" data-kind="${classification.kind}"><label class="bulk-preview-include"><input type="checkbox" data-bulk-tracking-include="${escapeHtml(row.trackingNumber)}" ${included ? 'checked' : ''} ${canInclude ? '' : 'disabled'} aria-label="Includi ordine ${escapeHtml(row.orderReference || row.trackingNumber)}"></label><div class="bulk-preview-identity"><strong title="${escapeHtml(row.orderReference || '')}">${escapeHtml(row.orderReference || 'Ordine non collegato')}</strong><small title="${escapeHtml(row.trackingNumber)}">${escapeHtml(row.trackingNumber)}</small></div><div class="bulk-preview-status ${classification.kind}"><strong>${escapeHtml(classification.label)}</strong>${classification.detail ? `<small>${escapeHtml(classification.detail)}</small>` : ''}</div></div>`;
+  }).join('') : '<p class="control-bulk-tracking-empty">Nessuna spedizione in questo filtro.</p>';
+}
+
+async function openBulkTrackingDialog() {
+  const rows = bulkTrackingRows();
+  if (!rows.length) return;
+  const dialog = $('#control-bulk-tracking-dialog');
+  $('#control-bulk-tracking-form').hidden = false;
+  $('#control-bulk-tracking-progress').hidden = true;
+  $('#control-bulk-tracking-result').hidden = true;
+  const preserveCarrier = document.querySelector('input[name="control-bulk-carrier-mode"][value="preserve"]');
+  if (preserveCarrier) preserveCarrier.checked = true;
+  $('#control-bulk-tracking-carrier-wrap').hidden = true;
+  $('#control-bulk-tracking-protect').checked = true;
+  bulkTrackingRetryRows = [];
+  bulkTrackingExcluded = new Set();
+  tell('#control-bulk-tracking-message', '', '');
+
+  try {
+    const [catalog, preferred] = await Promise.all([
+      request('/api/catalog'),
+      request('/api/settings/default-carrier').catch(() => ({})),
+    ]);
+    prestaShopCarrierCatalog = catalog.carriers || [];
+    const select = $('#control-bulk-tracking-carrier');
+    let selectedId = preferred.defaultCarrierId || '';
+    if (!prestaShopCarrierCatalog.some((carrier) => String(carrier.id) === String(selectedId))) {
+      selectedId = prestaShopCarrierCatalog.find((carrier) => /dsv|schenker/i.test(carrier.name))?.id || prestaShopCarrierCatalog[0]?.id || '';
+    }
+    select.innerHTML = '<option value="">Seleziona un corriere…</option>' + prestaShopCarrierCatalog.map((carrier) => `<option value="${escapeHtml(carrier.id)}"${String(carrier.id) === String(selectedId) ? ' selected' : ''}>${escapeHtml(carrier.name)}${carrier.active === false ? ' · Disattivato' : ''}</option>`).join('');
+  } catch (error) {
+    tell('#control-bulk-tracking-message', `Catalogo corrieri non disponibile: ${error.message}. Puoi comunque inviare i tracking mantenendo il corriere esistente.`, 'warning');
+  }
+  const hasAttentionRows = rows.some((row) => ['conflict', 'unlinked'].includes(bulkTrackingClassification(row).kind));
+  bulkTrackingPreviewFilter = hasAttentionRows ? 'attention' : 'ready';
+  renderBulkTrackingPreview();
+  if (!dialog.open) dialog.showModal();
+}
+
+async function executeBulkTrackingSync(rows) {
+  if (!rows.length || bulkTrackingRunning) return;
+  const changeCarrier = bulkTrackingCarrierMode() === 'change';
+  const carrierId = changeCarrier ? String($('#control-bulk-tracking-carrier')?.value || '') : '';
+  if (changeCarrier && !carrierId) return renderBulkTrackingPreview();
+  const skipIfDifferent = Boolean($('#control-bulk-tracking-protect')?.checked);
+  const actionable = rows.filter((row) => row.orderId || row.orderReference);
+  if (!actionable.length) return;
+
+  bulkTrackingRunning = true;
+  bulkTrackingRetryRows = [];
+  $('#control-bulk-tracking-form').hidden = true;
+  $('#control-bulk-tracking-result').hidden = true;
+  $('#control-bulk-tracking-progress').hidden = false;
+  const stopButton = $('#stop-control-bulk-tracking');
+  stopButton.disabled = false;
+  stopButton.textContent = 'Interrompi dopo questa riga';
+  const log = $('#control-bulk-tracking-log');
+  log.innerHTML = '';
+  let successful = 0;
+  let skipped = 0;
+  let interrupted = false;
+  const failures = [];
+
+  const updateProgress = (completed, current = '') => {
+    const percent = Math.round((completed / actionable.length) * 100);
+    $('#control-bulk-tracking-progress-text').textContent = `${completed} di ${actionable.length}`;
+    $('#control-bulk-tracking-progress-percent').textContent = `${percent}%`;
+    $('#control-bulk-tracking-progress-bar').style.transform = `scaleX(${percent / 100})`;
+    $('#control-bulk-tracking-progress-track').setAttribute('aria-valuenow', String(percent));
+    $('#control-bulk-tracking-current').textContent = current;
+  };
+  updateProgress(0, 'Preparazione aggiornamenti…');
+
+  for (let index = 0; index < actionable.length; index += 1) {
+    if (!bulkTrackingRunning) {
+      interrupted = true;
+      actionable.slice(index).forEach((row) => failures.push({ row, error: 'Operazione interrotta prima dell’invio.' }));
+      break;
+    }
+    const row = actionable[index];
+    const orderLabel = row.orderReference || `ID #${row.orderId}`;
+    updateProgress(index, `Ordine ${orderLabel} · ${row.trackingNumber}`);
+    try {
+      const result = await request(`/api/control-center/${encodeURIComponent(row.trackingNumber)}/sync-prestashop`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          preserveCarrier: !changeCarrier,
+          carrierId: carrierId || undefined,
+          skipIfDifferent,
+          overwrite: !skipIfDifferent,
+        }),
+      });
+      if (result.skipped) skipped += 1;
+      else {
+        successful += 1;
+        controlSelectedTrackingNumbers.delete(row.trackingNumber);
+      }
+      log.insertAdjacentHTML('afterbegin', `<div class="bulk-log-row ${result.skipped ? 'skipped' : 'success'}"><strong>${result.skipped ? 'Saltato' : 'Inviato'}</strong><span>${escapeHtml(orderLabel)} · ${escapeHtml(row.trackingNumber)}</span></div>`);
+    } catch (error) {
+      failures.push({ row, error: error.message });
+      log.insertAdjacentHTML('afterbegin', `<div class="bulk-log-row error"><strong>Errore</strong><span>${escapeHtml(orderLabel)} · ${escapeHtml(error.message)}</span></div>`);
+    }
+    updateProgress(index + 1, `Completati ${index + 1} di ${actionable.length}`);
+  }
+
+  bulkTrackingRunning = false;
+  bulkTrackingRetryRows = failures.map((failure) => failure.row);
+  $('#control-bulk-tracking-progress').hidden = true;
+  $('#control-bulk-tracking-result').hidden = false;
+  $('#control-bulk-tracking-result-title').textContent = interrupted ? 'Invio interrotto' : failures.length ? 'Invio completato con anomalie' : 'Tracking sincronizzati';
+  $('#control-bulk-tracking-result-kpis').innerHTML = `<div class="success"><strong>${successful}</strong><span>Inviati</span></div><div class="skipped"><strong>${skipped}</strong><span>Saltati</span></div><div class="${failures.length ? 'failed' : ''}"><strong>${failures.length}</strong><span>Errori</span></div>`;
+  const errors = $('#control-bulk-tracking-errors');
+  errors.hidden = failures.length === 0;
+  errors.innerHTML = failures.map((failure) => `<div><strong>${escapeHtml(failure.row.orderReference || failure.row.trackingNumber)}:</strong> ${escapeHtml(failure.error)}</div>`).join('');
+  const retry = $('#retry-control-bulk-tracking');
+  retry.hidden = failures.length === 0;
+  retry.textContent = `Riprova ${failures.length} non riuscit${failures.length === 1 ? 'o' : 'i'}`;
+  $('#control-bulk-tracking-result').focus();
+}
+
 function closeControlDetail({ force = false } = {}) {
   const panel = $('#shipment-detail');
   if (!force && panel?.open && shipmentDetailDirty && !window.confirm('Hai modifiche non salvate nella gestione eccezione. Vuoi chiudere senza salvarle?')) return false;
@@ -2733,7 +3410,17 @@ async function markSelectedAsWorking() {
 }
 
 function showView(requestedView) {
-  const view = ['control', 'import', 'history', 'settings'].includes(requestedView) ? requestedView : 'control';
+  const [requestedRoot, requestedSettingsSection] = String(requestedView || '').split('/');
+  const view = ['control', 'import', 'history', 'settings'].includes(requestedRoot) ? requestedRoot : 'control';
+  if (activeView === 'settings' && view !== 'settings' && dirtySettingsSections.size) {
+    const sections = [...dirtySettingsSections].map((section) => settingsSectionLabels[section]).join(', ');
+    if (!confirm(`Hai modifiche non salvate in: ${sections}.\n\nVuoi uscire senza salvarle?`)) {
+      window.history.replaceState(null, '', '#settings');
+      return;
+    }
+    dirtySettingsSections.clear();
+    updateSettingsDirtyBar();
+  }
   if (view !== 'control') {
     if ($('#shipment-detail')?.open) {
       if (closeControlDetail() === false) {
@@ -2751,11 +3438,14 @@ function showView(requestedView) {
   document.title = view === 'control' ? 'DSV - Tracking Center' : `${titles[view][0]} · DSV - Tracking Center`;
   if (view === 'control') void refreshControlCenter();
   if (view === 'history') void renderImportHistory();
+  if (view === 'import') void loadCatalog(true);
   if (view === 'settings') {
     if ($('#dsv-beta')) $('#dsv-beta').hidden = false;
     void loadStateMappings();
     void loadCronStatus();
     void loadNotificationSettings();
+    updateSettingsHealth();
+    if (settingsSectionLabels[requestedSettingsSection]) requestAnimationFrame(() => activateSettingsSection(requestedSettingsSection, { behavior: 'auto' }));
   }
 }
 
@@ -2811,7 +3501,12 @@ async function loadStateMappings() {
       });
     });
 
+    const bulkSelect = $('#mapping-bulk-state');
+    if (bulkSelect) bulkSelect.innerHTML = '<option value="">Scegli stato…</option>' + prestaShopStateCatalog.map((state) => `<option value="${escapeHtml(state.id)}">${escapeHtml(state.name)}</option>`).join('');
+
     tell('#state-mapping-message', `${Object.keys(dsvStateMappings).length} associazioni configurate.`);
+    updateMappingFilter();
+    updateSettingsHealth();
   } catch (error) {
     rows.innerHTML = `<p class="control-empty">${escapeHtml(error.message)}</p>`;
     tell('#state-mapping-message', 'Collega PrestaShop per configurare la mappatura.', 'error');
@@ -2837,6 +3532,8 @@ async function saveStateMappings(event) {
     });
     const result = await request('/api/dsv-state-mappings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mappings }) });
     dsvStateMappings = result.mappings || {};
+    markSettingsClean('mappings');
+    updateSettingsHealth();
     tell('#state-mapping-message', result.message, 'success');
     showFloatingToast('Mappature DSV salvate con successo!', 'success');
     if (controlOverview.records?.length) renderControlCenter({ ...controlOverview, stateMappings: dsvStateMappings });
@@ -2871,6 +3568,7 @@ async function loadNotificationSettings() {
     if ($('#trigger-digest')) $('#trigger-digest').checked = tr.dailyDigest !== false;
     if ($('#trigger-digest-hour')) $('#trigger-digest-hour').value = tr.digestHour ?? 8;
     if ($('#trigger-digest-minute')) $('#trigger-digest-minute').value = tr.digestMinute ?? 30;
+    updateSettingsHealth();
   } catch (err) {
     console.error('[NOTIFICATIONS] Errore caricamento impostazioni:', err);
   }
@@ -2924,6 +3622,8 @@ function setupNotificationSection() {
 
       if (msg) { msg.className = 'message success'; msg.textContent = res.message || 'Impostazioni salvate con successo!'; }
       showFloatingToast('Impostazioni notifiche salvate!', 'success');
+      markSettingsClean('notifications');
+      updateSettingsHealth();
     } catch (err) {
       if (msg) { msg.className = 'message error'; msg.textContent = `Errore: ${err.message}`; }
     } finally {
@@ -2947,8 +3647,9 @@ function setupNotificationSection() {
         body: JSON.stringify(payload),
       });
       showFloatingToast('Messaggio di prova Telegram inviato!', 'success');
-      alert(res.message || 'Messaggio inviato!');
+      setSettingsTestResult('notifications', true, `${res.message || 'Messaggio Telegram inviato'} · Chat ${$('#notify-tg-chatid')?.value?.trim() || 'configurata'}`);
     } catch (err) {
+      setSettingsTestResult('notifications', false, `Telegram: ${err.message}`);
       alert(`Test Telegram fallito: ${err.message}`);
     } finally {
       testTgBtn.disabled = false;
@@ -2993,8 +3694,9 @@ function setupNotificationSection() {
     try {
       const res = await request('/api/notifications/trigger-digest', { method: 'POST' });
       showFloatingToast(res.message || 'Digest inviato!', 'success');
+      setSettingsTestResult('notifications', true, `${res.message || 'Digest di prova inviato'} · ${settingsTimestamp()}`);
     } catch (err) {
-      alert(`Errore invio digest: ${err.message}`);
+      setSettingsTestResult('notifications', false, `Digest: ${err.message}`);
     } finally {
       testDigestBtn.disabled = false;
       testDigestBtn.textContent = orig;
@@ -3594,7 +4296,7 @@ async function loadPrestaShopLiveSync(shipment, requestToken) {
 
 $('#config-form').addEventListener('submit', async (event) => {
   event.preventDefault();
-  try { const config = await request('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ baseUrl: $('#base-url').value, apiKey: $('#api-key').value }) }); tell('#connection-message', config.configured ? 'Configurazione salvata. Ora scarica stati e corrieri.' : 'URL salvato. Inserisci anche la chiave Webservice.', 'success'); $('#api-key').value = ''; }
+  try { const config = await request('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ baseUrl: $('#base-url').value, apiKey: $('#api-key').value }) }); tell('#connection-message', config.configured ? 'Connessione salvata. Verifica ora i permessi del Webservice.' : 'URL salvato. Inserisci anche la chiave Webservice.', config.configured ? 'success' : 'warning'); $('#config-form').dataset.configured = config.configured ? 'true' : 'false'; $('#api-key').value = ''; markSettingsClean('connections'); updateSettingsHealth(); showFloatingToast('Connessione PrestaShop salvata!', 'success'); }
   catch (e) { tell('#connection-message', e.message, 'error'); }
 });
 
@@ -3605,24 +4307,79 @@ $('#test-connection').addEventListener('click', async () => {
     const panel = $('#permission-check'); panel.hidden = false;
     panel.innerHTML = `<h3>${passed ? 'Connessione pronta' : 'Permessi da correggere'}</h3><p>Il test di scrittura usa richieste intenzionalmente non valide: non modifica ordini né spedizioni.</p><div class="permission-grid">${results.map((item) => `<div class="permission ${item.authorized ? 'pass' : 'fail'}"><strong>${item.authorized ? '✓' : '!'} ${escapeHtml(item.label)}</strong><span>${item.method} · HTTP ${item.status}</span><small>${escapeHtml(item.detail)}</small></div>`).join('')}</div>`;
     tell('#connection-message', passed ? 'Tutte le autorizzazioni necessarie sono disponibili.' : 'Alcune autorizzazioni richieste non sono disponibili.', passed ? 'success' : 'error');
-  } catch (e) { tell('#connection-message', e.message, 'error'); }
+    setSettingsTestResult('prestashop', passed, passed ? `Permessi Webservice verificati per ${$('#base-url').value}` : 'Correggi i permessi evidenziati e ripeti il test.');
+  } catch (e) { tell('#connection-message', e.message, 'error'); setSettingsTestResult('prestashop', false, e.message); }
   finally { $('#test-connection').disabled = false; }
 });
 
-$('#load-catalog').addEventListener('click', async () => {
+async function loadCatalog(silent = false) {
   try {
     const [{ statuses, carriers }, defCarrier] = await Promise.all([
       request('/api/catalog'),
       request('/api/settings/default-carrier').catch(() => ({})),
     ]);
-    const fill = (el, rows, label) => { el.innerHTML = `<option value="">Seleziona ${label}</option>` + rows.map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join(''); };
+    const fill = (el, rows, label) => {
+      if (!el) return;
+      el.innerHTML = `<option value="">Seleziona ${label}</option>` + rows.map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join('');
+    };
     fill($('#state'), statuses, 'uno stato');
+    fill($('#import-state'), statuses, 'uno stato');
     fill($('#carrier'), carriers, 'un corriere');
-    if (defCarrier.defaultCarrierId) {
-      $('#carrier').value = defCarrier.defaultCarrierId;
+    fill($('#import-carrier'), carriers, 'un corriere');
+
+    const savedCarrier = localStorage.getItem('dsv_preferred_carrier') || defCarrier?.defaultCarrierId;
+    if (savedCarrier) {
+      if ($('#carrier')) $('#carrier').value = savedCarrier;
+      if ($('#import-carrier')) $('#import-carrier').value = savedCarrier;
     }
-    tell('#catalog-message', `${statuses.length} stati e ${carriers.length} corrieri disponibili.`, 'success');
-  } catch (e) { tell('#catalog-message', e.message, 'error'); }
+    const savedState = localStorage.getItem('dsv_preferred_state');
+    if (savedState) {
+      if ($('#state')) $('#state').value = savedState;
+      if ($('#import-state')) $('#import-state').value = savedState;
+    }
+    if (!silent) {
+      tell('#catalog-message', `${statuses.length} stati e ${carriers.length} corrieri disponibili.`, 'success');
+    }
+  } catch (e) {
+    if (!silent) tell('#catalog-message', e.message, 'error');
+  }
+}
+
+function syncCarrier(carrierId, carrierName = '') {
+  if ($('#carrier') && $('#carrier').value !== carrierId) $('#carrier').value = carrierId;
+  if ($('#import-carrier') && $('#import-carrier').value !== carrierId) $('#import-carrier').value = carrierId;
+  if (carrierId) {
+    localStorage.setItem('dsv_preferred_carrier', carrierId);
+    request('/api/settings/default-carrier', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ carrierId, carrierName }),
+    }).catch(() => {});
+  }
+}
+
+$('#load-catalog')?.addEventListener('click', () => loadCatalog(false));
+
+$('#carrier')?.addEventListener('change', () => {
+  const select = $('#carrier');
+  syncCarrier(select.value, select.options[select.selectedIndex]?.textContent || '');
+});
+
+$('#import-carrier')?.addEventListener('change', () => {
+  const select = $('#import-carrier');
+  syncCarrier(select.value, select.options[select.selectedIndex]?.textContent || '');
+});
+
+$('#state')?.addEventListener('change', () => {
+  const select = $('#state');
+  if ($('#import-state')) $('#import-state').value = select.value;
+  if (select.value) localStorage.setItem('dsv_preferred_state', select.value);
+});
+
+$('#import-state')?.addEventListener('change', () => {
+  const select = $('#import-state');
+  if ($('#state')) $('#state').value = select.value;
+  if (select.value) localStorage.setItem('dsv_preferred_state', select.value);
 });
 
 $('#carrier')?.addEventListener('change', async () => {
@@ -3749,19 +4506,318 @@ $('#manual-clear-btn')?.addEventListener('click', () => {
   $('#manual-tracking')?.focus();
 });
 
-$('#upload-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
+async function startUnifiedImport(fileObj) {
+  if (!fileObj) return;
+  currentImportFileName = fileObj.name || 'File Excel';
+  currentImportOrigin = 'excel';
+
+  const dropZone = $('#import-drop-zone');
+  const activeFileBox = $('#drop-zone-active-file');
+  const activeFilename = $('#active-filename');
+  if (dropZone) dropZone.classList.add('has-file');
+  if (activeFileBox) activeFileBox.hidden = false;
+  if (activeFilename) {
+    const sizeKb = Math.round(fileObj.size / 1024);
+    activeFilename.textContent = `${fileObj.name} (${sizeKb} KB)`;
+  }
+
+  previewRows = [];
+  verificationId = '';
+  importApplied = false;
+  currentVerificationJobId = null;
+  currentPreviewTab = 'ready';
+
+  if ($('#import-success-card')) $('#import-success-card').hidden = true;
+  if ($('#apply-feedback')) $('#apply-feedback').hidden = true;
+  if ($('#apply-progress')) $('#apply-progress').hidden = true;
+
+  tell('#import-message', 'Lettura ed analisi del file in corso…');
+
   try {
-    const fileObj = $('#file').files[0];
-    currentImportFileName = fileObj?.name || 'File Excel';
-    currentImportOrigin = 'excel';
-    const form = new FormData(); form.append('file', fileObj);
+    const form = new FormData();
+    form.append('file', fileObj);
     const { summary, rows } = await request('/api/import/preview', { method: 'POST', body: form });
-    previewRows = rows; verificationId = ''; importApplied = false; $('#summary').hidden = false; $('#verify-progress').hidden = true; $('#apply-feedback').hidden = true; if ($('#apply-progress')) $('#apply-progress').hidden = true;
-    $('#summary').textContent = `${summary.total} righe lette · ${summary.ready} nuove candidate · ${summary.skipped ? `${summary.skipped} già importate (saltate) · ` : ''}${summary.invalid} da controllare`;
-    renderRows(rows); $('#preview').hidden = false; $('#verify-import').hidden = false; $('#apply-import').hidden = true; $('#select-all').hidden = true; $('#clear-selection').hidden = true; $('#toggle-all').hidden = true; $('#selected-count').hidden = true; $('#update-options').hidden = true; $('#dsv-beta').hidden = true; $('#verify-dsv-beta').hidden = true;
-    tell('#import-message', summary.skipped ? `Analisi completata: ${summary.skipped} spedizioni già importate escluse, ${summary.ready} nuove pronte per verifica.` : 'Analisi completata. Verifica ora gli ordini: quelli con tracking esistente saranno saltati.', 'success');
-  } catch (e) { tell('#import-message', e.message, 'error'); }
+
+    previewRows = rows.map((r) => {
+      if (r.alreadyImported) {
+        return { ...r, verification: 'Tracking già presente', canApply: false };
+      }
+      if (r.validation !== 'Pronta per la verifica') {
+        return { ...r, verification: r.validation, canApply: false };
+      }
+      return { ...r, verification: 'In verifica…', canApply: false };
+    });
+
+    if ($('#summary')) {
+      $('#summary').hidden = false;
+      $('#summary').textContent = `${summary.total} righe lette · ${summary.ready} nuove candidate · ${summary.skipped ? `${summary.skipped} già presenti (saltate) · ` : ''}${summary.invalid} da controllare`;
+    }
+
+    if ($('#import-preview-tabs')) $('#import-preview-tabs').hidden = false;
+    if ($('#import-action-bar')) $('#import-action-bar').hidden = false;
+    if ($('#preview')) $('#preview').hidden = false;
+
+    renderRows(previewRows);
+    updatePreviewTabCounts();
+    updateSelectionUi();
+
+    const readyToVerify = previewRows.filter((row) => row.validation === 'Pronta per la verifica' && !row.alreadyImported);
+
+    if (readyToVerify.length === 0) {
+      if ($('#verify-progress')) $('#verify-progress').hidden = true;
+      if ($('#cancel-verify-btn')) $('#cancel-verify-btn').hidden = true;
+      tell('#import-message', summary.skipped ? `Analisi completata: tutte le ${summary.skipped} spedizioni sono già presenti nel sistema.` : 'File analizzato: nessuna riga idonea da verificare.', 'warning');
+      return;
+    }
+
+    if ($('#verify-progress')) $('#verify-progress').hidden = false;
+    if ($('#cancel-verify-btn')) $('#cancel-verify-btn').hidden = false;
+    updateProgress({ completed: 0, total: readyToVerify.length });
+    tell('#import-message', `Verifica in tempo reale su PrestaShop (${readyToVerify.length} ordini)…`);
+
+    const { jobId } = await request('/api/import/verification-jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rows: previewRows, filename: currentImportFileName, origin: currentImportOrigin }),
+    });
+    currentVerificationJobId = jobId;
+
+    const result = await waitForVerification(jobId);
+    if (result.cancelled) {
+      tell('#import-message', 'Verifica annullata dall’utente.', 'warning');
+      if ($('#verify-progress')) $('#verify-progress').hidden = true;
+      if ($('#cancel-verify-btn')) $('#cancel-verify-btn').hidden = true;
+      return;
+    }
+
+    const { summary: verifySummary, rows: verifiedRows, requestPlan, verificationId: resultId } = result;
+    verificationId = resultId;
+    currentVerificationJobId = null;
+    importApplied = false;
+
+    if ($('#verify-progress')) $('#verify-progress').hidden = true;
+    if ($('#cancel-verify-btn')) $('#cancel-verify-btn').hidden = true;
+
+    previewRows = verifiedRows.map((row) => ({
+      ...row,
+      selected: row.verification === 'Pronta per aggiornamento',
+    }));
+
+    const readyCount = previewRows.filter((row) => row.verification === 'Pronta per aggiornamento').length;
+    const skippedCount = previewRows.filter((row) => row.verification === 'Tracking già presente' || row.alreadyImported || row.verification?.includes('saltata')).length;
+
+    if ($('#summary')) {
+      $('#summary').textContent = `${readyCount} pronte per aggiornamento · ${skippedCount} saltate (già presenti/importate) · ${previewRows.length - readyCount - skippedCount} da controllare`;
+    }
+
+    renderRows(previewRows, 'verification');
+    updateSelectionUi();
+    void refreshControlCenter();
+
+    tell(
+      '#import-message',
+      `${readyCount} ordini pronti per l'aggiornamento (${skippedCount} già presenti e saltati). Seleziona il corriere e conferma.`,
+      skippedCount ? 'warning' : 'success'
+    );
+  } catch (e) {
+    if ($('#verify-progress')) $('#verify-progress').hidden = true;
+    if ($('#cancel-verify-btn')) $('#cancel-verify-btn').hidden = true;
+    tell('#import-message', e.message, 'error');
+  }
+}
+
+function resetImportWorkspace() {
+  if (currentVerificationJobId) {
+    request(`/api/import/verification-jobs/${encodeURIComponent(currentVerificationJobId)}/cancel`, { method: 'POST' }).catch(() => {});
+    currentVerificationJobId = null;
+  }
+  const dropZone = $('#import-drop-zone');
+  const activeFileBox = $('#drop-zone-active-file');
+  const fileInput = $('#file');
+  if (dropZone) dropZone.classList.remove('has-file', 'drag-over');
+  if (activeFileBox) activeFileBox.hidden = true;
+  if (fileInput) fileInput.value = '';
+
+  previewRows = [];
+  verificationId = '';
+  importApplied = false;
+
+  if ($('#summary')) $('#summary').hidden = true;
+  if ($('#import-preview-tabs')) $('#import-preview-tabs').hidden = true;
+  if ($('#import-action-bar')) $('#import-action-bar').hidden = true;
+  if ($('#preview')) {
+    $('#preview').hidden = true;
+    const tbody = $('#preview tbody');
+    if (tbody) tbody.innerHTML = '';
+  }
+  if ($('#verify-progress')) $('#verify-progress').hidden = true;
+  if ($('#cancel-verify-btn')) $('#cancel-verify-btn').hidden = true;
+  if ($('#apply-feedback')) $('#apply-feedback').hidden = true;
+  if ($('#import-success-card')) $('#import-success-card').hidden = true;
+  if ($('#apply-progress')) $('#apply-progress').hidden = true;
+}
+
+function showImportSuccessCard(summary, results) {
+  const card = $('#import-success-card');
+  const grid = $('#success-kpi-grid');
+  const subtitle = $('#success-card-subtitle');
+  if (!card || !grid) return;
+
+  const updated = Number(summary.Aggiornata || 0);
+  const errors = Number(summary.Errore || 0);
+  const skipped = Number(summary.Saltata || 0);
+  const total = results?.length || (updated + errors + skipped);
+
+  if (subtitle) {
+    subtitle.textContent = errors > 0
+      ? `${updated} ordini aggiornati con successo, ${errors} con errori o avvisi.`
+      : `Tutti i ${updated} ordini selezionati sono stati aggiornati su PrestaShop.`;
+  }
+
+  grid.innerHTML = `
+    <div class="kpi-box success">
+      <span class="kpi-num">${updated}</span>
+      <span class="kpi-lbl">Aggiornati</span>
+    </div>
+    <div class="kpi-box ${errors > 0 ? 'error' : 'neutral'}">
+      <span class="kpi-num">${errors}</span>
+      <span class="kpi-lbl">Con errori</span>
+    </div>
+    <div class="kpi-box neutral">
+      <span class="kpi-num">${skipped}</span>
+      <span class="kpi-lbl">Saltati</span>
+    </div>
+    <div class="kpi-box neutral">
+      <span class="kpi-num">${total}</span>
+      <span class="kpi-lbl">Totale elaborati</span>
+    </div>
+  `;
+
+  card.hidden = false;
+  card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+// Drop zone and file input listeners
+const dropZone = $('#import-drop-zone');
+const fileInput = $('#file');
+
+if (dropZone && fileInput) {
+  ['dragenter', 'dragover'].forEach((eventName) => {
+    dropZone.addEventListener(eventName, (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dropZone.classList.add('drag-over');
+    });
+  });
+
+  ['dragleave', 'dragend', 'drop'].forEach((eventName) => {
+    dropZone.addEventListener(eventName, (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dropZone.classList.remove('drag-over');
+    });
+  });
+
+  dropZone.addEventListener('drop', (e) => {
+    const files = e.dataTransfer?.files;
+    if (files && files.length > 0) {
+      fileInput.files = files;
+      startUnifiedImport(files[0]);
+    }
+  });
+
+  dropZone.addEventListener('click', (e) => {
+    if (e.target.closest('#cancel-file-btn')) return;
+    fileInput.click();
+  });
+
+  dropZone.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      if (e.target.closest('#cancel-file-btn')) return;
+      e.preventDefault();
+      fileInput.click();
+    }
+  });
+
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files && fileInput.files.length > 0) {
+      startUnifiedImport(fileInput.files[0]);
+    }
+  });
+}
+
+$('#cancel-file-btn')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  resetImportWorkspace();
+  tell('#import-message', 'File rimosso. Trascina o seleziona un nuovo file Excel.', 'success');
+});
+
+$('#cancel-verify-btn')?.addEventListener('click', async () => {
+  if (currentVerificationJobId) {
+    try {
+      await request(`/api/import/verification-jobs/${encodeURIComponent(currentVerificationJobId)}/cancel`, { method: 'POST' });
+      tell('#import-message', 'Annullamento in corso…', 'warning');
+    } catch (e) {
+      tell('#import-message', e.message, 'error');
+    }
+  }
+});
+
+$('#import-preview-tabs')?.addEventListener('click', (event) => {
+  const pill = event.target.closest('.import-tab-pill');
+  if (!pill) return;
+  currentPreviewTab = pill.dataset.previewFilter || 'ready';
+  document.querySelectorAll('.import-tab-pill').forEach((p) => {
+    p.classList.toggle('active', p === pill);
+  });
+  renderRows();
+});
+
+$('#success-goto-control-btn')?.addEventListener('click', () => {
+  location.hash = 'control';
+  showView('control');
+  setTimeout(() => {
+    document.querySelector('.control-center-card')?.scrollIntoView({ behavior: 'smooth' });
+  }, 100);
+});
+
+$('#success-export-csv-btn')?.addEventListener('click', () => {
+  if (!previewRows.length) return;
+  const headers = ['Riga', 'Riferimento Ordine', 'Numero Spedizione', 'Data Ordine', 'Stato PrestaShop', 'Stato DSV beta', 'Esito', 'Dettaglio'];
+  const csvRows = [headers.join(';')];
+  previewRows.forEach((r) => {
+    const rowData = [
+      r.sourceRow,
+      `"${(r.orderReference || '').replace(/"/g, '""')}"`,
+      `"${(r.trackingNumber || '').replace(/"/g, '""')}"`,
+      `"${(displayDate(r.orderDate) || '').replace(/"/g, '""')}"`,
+      `"${(r.currentState || '').replace(/"/g, '""')}"`,
+      `"${(r.dsvBetaStatus || '').replace(/"/g, '""')}"`,
+      `"${(r.applyResult || r.verification || r.validation || '').replace(/"/g, '""')}"`,
+      `"${(r.applyDetail || (r.existingTracking ? `già presente: ${r.existingTracking}` : '')).replace(/"/g, '""')}"`,
+    ];
+    csvRows.push(rowData.join(';'));
+  });
+
+  const blob = new Blob(['\uFEFF' + csvRows.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `report-import-dsv-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+});
+
+$('#success-new-import-btn')?.addEventListener('click', () => {
+  resetImportWorkspace();
+  document.querySelector('.import-card')?.scrollIntoView({ behavior: 'smooth' });
+});
+
+$('#upload-form')?.addEventListener('submit', (e) => {
+  e.preventDefault();
+  if (fileInput?.files?.[0]) startUnifiedImport(fileInput.files[0]);
 });
 
 $('#verify-import').addEventListener('click', async () => {
@@ -3796,26 +4852,77 @@ $('#toggle-all').addEventListener('change', (event) => { previewRows.forEach((ro
 $('#apply-import').addEventListener('click', async () => {
   const selected = selectedRows();
   if (!selected.length) return;
-  const updateTracking = $('#update-tracking').checked; const updateState = $('#update-state').checked;
-  if (!updateTracking && !updateState) { tell('#import-message', 'Scegli almeno un tipo di aggiornamento.', 'error'); return; }
-  if (!confirm(`Confermi l’aggiornamento di ${selected.length} righe selezionate? Le righe non selezionate non saranno modificate.`)) return;
+
+  const carrierId = $('#import-carrier')?.value || $('#carrier')?.value;
+  const stateId = $('#import-state')?.value || $('#state')?.value;
+  const updateTracking = $('#update-tracking')?.checked ?? true;
+  const updateState = $('#update-state')?.checked ?? true;
+
+  if (!updateTracking && !updateState) {
+    tell('#import-message', 'Seleziona almeno un tipo di aggiornamento (tracking o stato).', 'error');
+    return;
+  }
+  if (updateTracking && !carrierId) {
+    tell('#import-message', 'Seleziona un corriere PrestaShop prima di confermare l\’aggiornamento del tracking.', 'error');
+    $('#import-carrier')?.focus();
+    return;
+  }
+  if (updateState && !stateId) {
+    tell('#import-message', 'Seleziona il nuovo stato ordine PrestaShop prima di confermare.', 'error');
+    $('#import-state')?.focus();
+    return;
+  }
+
+  if (!confirm(`Confermi l’aggiornamento di ${selected.length} ordini selezionati? Le righe non selezionate non saranno modificate.`)) return;
+
   try {
-    $('#apply-import').disabled = true; updateApplyProgress({ completed: 0, total: selected.length }); tell('#import-message', `Aggiornamento di ${selected.length} righe in corso…`);
-    const { jobId } = await request('/api/import/apply-jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ verificationId, carrierId: $('#carrier').value, stateId: $('#state').value, updateTracking, updateState, selectedSourceRows: selected.map((row) => row.sourceRow) }) });
+    $('#apply-import').disabled = true;
+    updateApplyProgress({ completed: 0, total: selected.length });
+    tell('#import-message', `Aggiornamento di ${selected.length} ordini in corso su PrestaShop…`);
+
+    const { jobId } = await request('/api/import/apply-jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        verificationId,
+        carrierId,
+        stateId,
+        updateTracking,
+        updateState,
+        selectedSourceRows: selected.map((row) => row.sourceRow),
+      }),
+    });
+
     const { summary, results } = await waitForApply(jobId);
     const outcomeByRow = new Map(results.map((row) => [Number(row.sourceRow), row]));
-    const selectedStateName = $('#state').selectedOptions[0]?.textContent || '';
+    const selectStateEl = $('#import-state') || $('#state');
+    const selectedStateName = selectStateEl?.selectedOptions?.[0]?.textContent || '';
     importApplied = true;
+
     previewRows = previewRows.map((row) => {
       const outcome = outcomeByRow.get(Number(row.sourceRow));
       if (!outcome) return row;
-      return { ...row, selected: false, applyResult: outcome.result, applyDetail: outcome.detail, currentState: outcome.result === 'Aggiornata' && updateState ? selectedStateName : row.currentState };
+      return {
+        ...row,
+        selected: false,
+        applyResult: outcome.result,
+        applyDetail: outcome.detail,
+        currentState: outcome.result === 'Aggiornata' && updateState ? selectedStateName : row.currentState,
+      };
     });
-    renderRows(previewRows, 'verification'); updateSelectionUi(); showApplyFeedback(summary); void refreshControlCenter();
+
+    renderRows(previewRows, 'verification');
+    updateSelectionUi();
+    showImportSuccessCard(summary, results);
+    showApplyFeedback(summary);
+    void refreshControlCenter();
+
     tell('#import-message', Object.entries(summary).map(([name, count]) => `${name}: ${count}`).join(' · '), Number(summary.Errore || 0) ? 'warning' : 'success');
+  } catch (e) {
+    tell('#import-message', e.message, 'error');
+  } finally {
+    $('#apply-import').disabled = false;
   }
-  catch (e) { tell('#import-message', e.message, 'error'); }
-  finally { $('#apply-import').disabled = false; }
 });
 
 $('#save-dsv-beta').addEventListener('click', async () => {
@@ -3826,14 +4933,14 @@ $('#save-dsv-beta').addEventListener('click', async () => {
     const data = await request('/api/dsv-beta/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: $('#dsv-beta-enabled').checked, camofoxUrl: $('#dsv-camofox-url').value, trackingUrl: $('#dsv-tracking-url').value, speedProfile }) });
     dsvBetaSettings = data; updateControlServiceStatus(); updateSelectionUi(); updateControlSelectionUi([...document.querySelectorAll('.control-row-select')].map((input) => ({ trackingNumber: input.dataset.tracking })));
     const modeLabel = data.speedProfile === 'fast' ? 'Rapido controllato' : 'Affidabile';
-    tell('#dsv-config-message', data.enabled ? `Servizio attivo in modalità ${modeLabel}. Una spedizione alla volta, pausa media ${data.intervalMs / 1000} secondi.` : 'Configurazione salvata; servizio disattivato.', 'success');
+    tell('#dsv-config-message', data.enabled ? `Servizio attivo in modalità ${modeLabel}. Una spedizione alla volta, pausa media ${data.intervalMs / 1000} secondi.` : 'Configurazione salvata; servizio disattivato.', 'success'); markSettingsClean('connections'); updateSettingsHealth(); showFloatingToast('Configurazione DSV salvata!', 'success');
   } catch (e) { tell('#dsv-config-message', e.message, 'error'); }
   finally { button.disabled = false; }
 });
 
 $('#test-dsv-beta').addEventListener('click', async () => {
-  try { $('#test-dsv-beta').disabled = true; tell('#dsv-config-message', 'Controllo del servizio Camoufox locale in corso…'); const result = await request('/api/dsv-beta/test', { method: 'POST' }); tell('#dsv-config-message', result.message, 'success'); }
-  catch (e) { tell('#dsv-config-message', e.message, 'error'); }
+  try { $('#test-dsv-beta').disabled = true; tell('#dsv-config-message', 'Controllo del servizio Camoufox locale in corso…'); const result = await request('/api/dsv-beta/test', { method: 'POST' }); tell('#dsv-config-message', result.message, 'success'); setSettingsTestResult('camofox', true, `${result.message} · ${$('#dsv-camofox-url').value}`); }
+  catch (e) { tell('#dsv-config-message', e.message, 'error'); setSettingsTestResult('camofox', false, `${e.message} · ${$('#dsv-camofox-url').value}`); }
   finally { $('#test-dsv-beta').disabled = false; }
 });
 
@@ -4001,8 +5108,8 @@ window.addEventListener('scroll', closeControlPrestaFilter, true);
 
 $('.control-center-card').addEventListener('click', (event) => {
   if (!event.target.closest('#configure-control-mappings')) return;
-  location.hash = 'settings';
-  setTimeout(() => $('#state-mapping-view')?.scrollIntoView({ block: 'start', behavior: 'smooth' }), 120);
+  location.hash = 'settings/mappings';
+  setTimeout(() => activateSettingsSection('mappings'), 120);
 });
 
 document.addEventListener('click', async (event) => {
@@ -4033,3 +5140,24 @@ Promise.all([initialConfig(), loadDsvBeta(), refreshControlCenter(), loadCronSta
   .then(() => resumeControlDsvVerification())
   .catch(() => {});
 showView(location.hash.slice(1) || 'control');
+
+document.addEventListener('click', async (event) => {
+  const trackingUrlCopyButton = event.target.closest('#copy-dsv-tracking-url');
+  if (trackingUrlCopyButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    const trackingUrl = $('#dsv-tracking-url')?.value.trim();
+    if (!trackingUrl) return;
+    const success = await copyToClipboard(trackingUrl);
+    if (success) {
+      trackingUrlCopyButton.classList.add('copied');
+      const orig = trackingUrlCopyButton.textContent;
+      trackingUrlCopyButton.textContent = 'Copiato!';
+      setTimeout(() => {
+        trackingUrlCopyButton.classList.remove('copied');
+        trackingUrlCopyButton.textContent = orig;
+      }, 1500);
+      showFloatingToast('URL tracking DSV copiato negli appunti!', 'success');
+    }
+  }
+});

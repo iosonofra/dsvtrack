@@ -17,7 +17,7 @@ NC='\033[0m'
 echo ""
 echo -e "${BLUE}${BOLD}==============================================================${NC}"
 echo -e "${BLUE}${BOLD}   DSV - Tracking Center · Installazione Automatica Proxmox   ${NC}"
-echo -e "${BLUE}${BOLD}   LXC Container Ultraleggero (Alpine Linux + Node.js)        ${NC}"
+echo -e "${BLUE}${BOLD}   LXC Container (Debian 12 / Alpine Linux + Node.js)         ${NC}"
 echo -e "${BLUE}${BOLD}==============================================================${NC}"
 echo ""
 

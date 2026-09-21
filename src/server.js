@@ -783,46 +783,181 @@ app.post('/api/control-center/:trackingNumber/sync-prestashop', async (req, res)
     }
     if (!orderId) throw new Error('Impossibile determinare l’ordine PrestaShop collegato a questa spedizione.');
 
-    const carriers = await shop.listCarriers();
-    let carrierId = req.body?.carrierId ? String(req.body.carrierId).trim() : connection.defaultCarrierId;
-    if (!carrierId) {
+    const preserveCarrier = Boolean(req.body?.preserveCarrier);
+    const carriers = preserveCarrier ? await shop.listCarriers().catch(() => []) : await shop.listCarriers();
+    let carrierId = preserveCarrier ? '' : (req.body?.carrierId ? String(req.body.carrierId).trim() : connection.defaultCarrierId);
+    if (!preserveCarrier && !carrierId) {
       const dsvCarrier = carriers.find((c) => /dsv|schenker/i.test(c.name));
       carrierId = dsvCarrier ? dsvCarrier.id : (carriers[0]?.id || '');
     }
-    if (!carrierId) throw new Error('Nessun corriere attivo trovato su PrestaShop per l’associazione.');
-
-    const targetCarrier = carriers.find((c) => String(c.id) === String(carrierId));
-    const carrierName = targetCarrier ? targetCarrier.name : `Corriere #${carrierId}`;
+    if (!preserveCarrier && !carrierId) throw new Error('Nessun corriere trovato su PrestaShop per l’associazione.');
 
     const overwrite = Boolean(req.body?.overwrite);
-    const outcome = await shop.applyOrderCarrierOnly({
-      orderId,
-      trackingNumber: shipment.trackingNumber,
-      carrierId,
-      overwrite,
-    });
+    const skipIfDifferent = Boolean(req.body?.skipIfDifferent);
+    let outcome = null;
+    let skipped = false;
+    try {
+      outcome = await shop.applyOrderCarrierOnly({ orderId, trackingNumber: shipment.trackingNumber, carrierId, overwrite });
+    } catch (error) {
+      if (/già presente/i.test(error.message) && skipIfDifferent) {
+        skipped = true;
+        outcome = { overwritten: false, skipped: true };
+      } else {
+        throw error;
+      }
+    }
 
-    if (req.body?.setAsDefaultCarrier || !connection.defaultCarrierId) {
+    const effectiveCarrierId = String(outcome?.carrierId || carrierId || '').trim();
+    const targetCarrier = carriers.find((candidate) => String(candidate.id) === effectiveCarrierId);
+    const carrierName = targetCarrier ? targetCarrier.name : (preserveCarrier ? '' : `Corriere #${effectiveCarrierId}`);
+
+    if (!preserveCarrier && (req.body?.setAsDefaultCarrier || !connection.defaultCarrierId)) {
       connection.defaultCarrierId = carrierId;
       connection.defaultCarrierName = carrierName;
       await saveSettings(connection);
     }
 
-    const updated = await syncShipmentPrestaShopShipping(shipment.trackingNumber, {
+    const updated = skipped ? shipment : await syncShipmentPrestaShopShipping(shipment.trackingNumber, {
       orderId,
       orderReference: shipment.orderReference,
-      carrierId,
+      carrierId: effectiveCarrierId,
       carrierName,
-      overwritten: outcome.overwritten,
+      overwritten: Boolean(outcome?.overwritten),
     });
+
+    const targetStateId = req.body?.stateId ? String(req.body.stateId).trim() : '';
+    let stateOutcome = null;
+    if (targetStateId) {
+      stateOutcome = await shop.applyOrderStateSafely({ orderId, stateId: targetStateId });
+      const states = await shop.listOrderStates().catch(() => []);
+      const matchedState = states.find((state) => String(state.id) === targetStateId);
+      await syncManualPrestaShopState(shipment.trackingNumber, {
+        stateId: targetStateId,
+        stateName: matchedState?.name || `Stato #${targetStateId}`,
+      });
+    }
 
     res.json({
       success: true,
-      message: outcome.overwritten
-        ? `Tracking sovrascritto e corriere impostato su “${carrierName}”.`
-        : `Tracking importato e corriere impostato su “${carrierName}”.`,
+      skipped,
+      message: skipped
+        ? 'Tracking già presente su PrestaShop, spedizione saltata senza sovrascrittura.'
+        : outcome.overwritten
+          ? preserveCarrier ? 'Tracking sovrascritto senza modificare il corriere.' : `Tracking sovrascritto e corriere impostato su “${carrierName}”.`
+          : preserveCarrier ? 'Tracking importato senza modificare il corriere.' : `Tracking importato e corriere impostato su “${carrierName}”.`,
       shipment: updated,
       outcome,
+      stateOutcome,
+    });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post('/api/control-center/bulk-sync-tracking', async (req, res) => {
+  try {
+    const trackingNumbers = Array.isArray(req.body?.trackingNumbers)
+      ? req.body.trackingNumbers.map((tracking) => String(tracking).trim()).filter(Boolean)
+      : [];
+    if (!trackingNumbers.length) throw new Error('Seleziona almeno una spedizione da sincronizzare.');
+
+    const shop = client();
+    const carriers = await shop.listCarriers().catch(() => []);
+    const preserveCarrier = Boolean(req.body?.preserveCarrier);
+    let carrierId = preserveCarrier ? '' : (req.body?.carrierId ? String(req.body.carrierId).trim() : connection.defaultCarrierId);
+    if (!preserveCarrier && !carrierId && carriers.length) {
+      const dsvCarrier = carriers.find((carrier) => /dsv|schenker/i.test(carrier.name));
+      carrierId = dsvCarrier ? dsvCarrier.id : carriers[0].id;
+    }
+    if (!preserveCarrier && !carrierId) throw new Error('Nessun corriere trovato su PrestaShop per l’associazione.');
+
+    const targetCarrier = carriers.find((carrier) => String(carrier.id) === String(carrierId));
+    const carrierName = targetCarrier ? targetCarrier.name : (preserveCarrier ? 'Corriere esistente' : `Corriere #${carrierId}`);
+    const overwrite = Boolean(req.body?.overwrite);
+    const skipIfDifferent = Boolean(req.body?.skipIfDifferent ?? !overwrite);
+    const targetStateId = req.body?.stateId ? String(req.body.stateId).trim() : '';
+    const states = targetStateId ? await shop.listOrderStates().catch(() => []) : [];
+    const targetState = states.find((state) => String(state.id) === targetStateId);
+    const results = [];
+
+    for (const tracking of trackingNumbers) {
+      try {
+        const shipment = await getShipment(tracking);
+        if (!shipment) throw new Error('Spedizione non presente nel database locale.');
+
+        let orderId = shipment.orderId;
+        if (!orderId && shipment.orderReference) {
+          const orders = await shop.findOrdersByReference(shipment.orderReference);
+          if (orders.length === 1) orderId = orders[0].id;
+          else if (orders.length > 1) throw new Error(`Riferimento ambiguo: ${orders.length} ordini trovati`);
+          else throw new Error(`Ordine ${shipment.orderReference} non trovato`);
+        }
+        if (!orderId) throw new Error('Riferimento ordine non collegato.');
+
+        let outcome = null;
+        let skipped = false;
+        try {
+          outcome = await shop.applyOrderCarrierOnly({
+            orderId,
+            trackingNumber: shipment.trackingNumber,
+            carrierId,
+            overwrite,
+          });
+        } catch (error) {
+          if (/già presente/i.test(error.message) && skipIfDifferent) {
+            skipped = true;
+            outcome = { overwritten: false, skipped: true };
+          } else {
+            throw error;
+          }
+        }
+
+        const effectiveCarrierId = String(outcome?.carrierId || carrierId || '').trim();
+        const effectiveCarrier = carriers.find((candidate) => String(candidate.id) === effectiveCarrierId);
+        const effectiveCarrierName = effectiveCarrier ? effectiveCarrier.name : (preserveCarrier ? '' : carrierName);
+        if (!skipped) {
+          await syncShipmentPrestaShopShipping(shipment.trackingNumber, {
+            orderId,
+            orderReference: shipment.orderReference,
+            carrierId: effectiveCarrierId,
+            carrierName: effectiveCarrierName,
+            overwritten: Boolean(outcome?.overwritten),
+          });
+        }
+
+        if (targetStateId && !skipped) {
+          await shop.applyOrderStateSafely({ orderId, stateId: targetStateId });
+          await syncManualPrestaShopState(shipment.trackingNumber, {
+            stateId: targetStateId,
+            stateName: targetState?.name || `Stato #${targetStateId}`,
+          });
+        }
+
+        results.push({
+          trackingNumber: tracking,
+          orderId,
+          orderReference: shipment.orderReference || orderId,
+          success: true,
+          skipped,
+          overwritten: Boolean(outcome?.overwritten),
+          detail: skipped
+            ? 'Tracking già presente su PrestaShop (non sovrascritto)'
+            : outcome?.overwritten
+              ? preserveCarrier ? 'Tracking sovrascritto; corriere invariato' : `Tracking sovrascritto (Corriere: ${effectiveCarrierName})`
+              : preserveCarrier ? 'Tracking inviato; corriere invariato' : `Tracking inviato (Corriere: ${effectiveCarrierName})`,
+        });
+      } catch (error) {
+        results.push({ trackingNumber: tracking, success: false, error: error.message || 'Errore durante la sincronizzazione' });
+      }
+    }
+
+    res.json({
+      total: trackingNumbers.length,
+      successfulCount: results.filter((result) => result.success && !result.skipped).length,
+      skippedCount: results.filter((result) => result.success && result.skipped).length,
+      failedCount: results.filter((result) => !result.success).length,
+      carrierName: preserveCarrier ? 'Invariato' : carrierName,
+      results,
     });
   } catch (error) {
     res.status(400).json({ error: error.message });
