@@ -213,6 +213,7 @@ export class DsvCronService {
         completed: 0,
         total: candidates.length,
         currentTracking: candidates[0].trackingNumber,
+        requestedSpeedProfile: normalizeDsvSpeedProfile(dsvBetaConfig.speedProfile),
         speedProfile: normalizeDsvSpeedProfile(dsvBetaConfig.speedProfile),
       };
 
@@ -240,7 +241,7 @@ export class DsvCronService {
 
           // Se compare captcha o blocco di accesso, effettua reset sessione e pausa prolungata
           if (outcome.reasonCode === 'ACCESS_GUARD' || outcome.status === 'Intervento manuale richiesto') {
-            await betaClient.resetSession('Modalità affidabile attivata dopo una richiesta di verifica da parte di DSV.');
+            await betaClient.resetSession('Sessione Camoufox reimpostata dopo una richiesta di verifica da parte di DSV.');
             await new Promise((r) => setTimeout(r, 8000));
           }
         } catch (error) {
@@ -250,7 +251,7 @@ export class DsvCronService {
             status: 'Errore beta',
             detail: error.message,
           });
-          await betaClient.resetSession('Modalità affidabile attivata dopo un errore di navigazione Camoufox.');
+          await betaClient.resetSession('Sessione Camoufox reimpostata dopo un errore di navigazione.');
         }
 
         // Sincronizza subito la spedizione nel database locale in modo progressivo

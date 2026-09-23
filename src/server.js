@@ -1273,12 +1273,12 @@ async function runDsvBetaJob(job, trackingNumbers) {
             else dsvBetaCache.delete(trackingNumber);
             job.results.push({ trackingNumber, ...value, cached: false });
             if (value.reasonCode === 'ACCESS_GUARD' || value.status === 'Intervento manuale richiesto') {
-              await beta.resetSession('Modalità affidabile attivata dopo una richiesta di verifica da parte di DSV.');
+              await beta.resetSession('Sessione Camoufox reimpostata dopo una richiesta di verifica da parte di DSV.');
               if (index < trackingNumbers.length - 1) await pauseDsvBetaJob(job, 6000 + Math.floor(Math.random() * 2000));
             }
           } catch (error) {
             job.results.push({ trackingNumber, status: 'Errore beta', detail: error.message, source: 'Nessuna modifica è stata eseguita.', cached: false });
-            await beta.resetSession('Modalità affidabile attivata dopo un errore di navigazione Camoufox.');
+            await beta.resetSession('Sessione Camoufox reimpostata dopo un errore di navigazione.');
             if (index < trackingNumbers.length - 1) await pauseDsvBetaJob(job, 5000);
           }
         }

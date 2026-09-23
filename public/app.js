@@ -799,7 +799,9 @@ function updateControlDsvProgress(progress, context = {}) {
   tracking.hidden = !progress.currentTracking;
 
   const mode = $('#control-dsv-progress-mode');
-  mode.textContent = `Modalità ${dsvSpeedLabel(effectiveMode).toLocaleLowerCase('it-IT')}${fallbackActive ? ' · fallback' : ''}`;
+  mode.textContent = fallbackActive
+    ? `Modalità ${dsvSpeedLabel(requestedMode).toLocaleLowerCase('it-IT')} → ${dsvSpeedLabel(effectiveMode).toLocaleLowerCase('it-IT')} · fallback`
+    : `Modalità ${dsvSpeedLabel(effectiveMode).toLocaleLowerCase('it-IT')}`;
   mode.title = progress.fallbackReason || '';
   mode.classList.toggle('fallback', fallbackActive);
 
@@ -1385,7 +1387,9 @@ function renderCronStatus(status) {
   if (indicator) {
     if (status.isRunning) {
       indicator.className = 'status-indicator running';
-      indicator.textContent = `In esecuzione · ${dsvSpeedLabel(status.activeProgress?.speedProfile)}`;
+      const requested = status.activeProgress?.requestedSpeedProfile || status.activeProgress?.speedProfile;
+      const effective = status.activeProgress?.speedProfile || requested;
+      indicator.textContent = `In esecuzione · ${dsvSpeedLabel(requested)}${requested !== effective ? ` → ${dsvSpeedLabel(effective)}` : ''}`;
     } else if (status.isNightPaused) {
       indicator.className = 'status-indicator paused';
       indicator.textContent = 'Pausa notturna';
@@ -1470,7 +1474,9 @@ function renderCronStatus(status) {
         ? `<span style="color:var(--danger)"> · ${s.errors} con errore</span>`
         : '';
       const cancelledText = s.type === 'cancelled' ? ' <span style="color:var(--warning)">(Interrotta dall’operatore)</span>' : '';
-      const profileText = dsvSpeedLabel(s.effectiveSpeedProfile, true);
+      const requestedProfileText = dsvSpeedLabel(s.speedProfile, true);
+      const effectiveProfileText = dsvSpeedLabel(s.effectiveSpeedProfile, true);
+      const profileText = requestedProfileText === effectiveProfileText ? effectiveProfileText : `${requestedProfileText} → ${effectiveProfileText}`;
       const fallbackText = s.fallbackReason ? `<li class="cron-profile-fallback">${escapeHtml(s.fallbackReason)}</li>` : '';
 
       summaryList.innerHTML = `
@@ -4937,6 +4943,11 @@ $('#save-dsv-beta').addEventListener('click', async () => {
     const speedProfile = document.querySelector('input[name="dsv-speed-profile"]:checked')?.value || 'safe';
     const data = await request('/api/dsv-beta/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: $('#dsv-beta-enabled').checked, camofoxUrl: $('#dsv-camofox-url').value, trackingUrl: $('#dsv-tracking-url').value, speedProfile }) });
     dsvBetaSettings = data; updateControlServiceStatus(); updateSelectionUi(); updateControlSelectionUi([...document.querySelectorAll('.control-row-select')].map((input) => ({ trackingNumber: input.dataset.tracking })));
+    if (data.speedProfile !== speedProfile) {
+      const savedInput = document.querySelector(`input[name="dsv-speed-profile"][value="${data.speedProfile}"]`);
+      if (savedInput) savedInput.checked = true;
+      throw new Error(`Il server ha salvato la modalità ${dsvSpeedLabel(data.speedProfile).toLocaleLowerCase('it-IT')} invece di ${dsvSpeedLabel(speedProfile).toLocaleLowerCase('it-IT')}. Aggiorna anche i file server e riavvia il servizio prima di usare Ultra.`);
+    }
     const modeLabel = dsvSpeedLabel(data.speedProfile, true);
     tell('#dsv-config-message', data.enabled ? `Servizio attivo in modalità ${modeLabel}. Una spedizione alla volta, pausa media ${data.intervalMs / 1000} secondi.` : 'Configurazione salvata; servizio disattivato.', 'success'); markSettingsClean('connections'); updateSettingsHealth(); showFloatingToast('Configurazione DSV salvata!', 'success');
   } catch (e) { tell('#dsv-config-message', e.message, 'error'); }
