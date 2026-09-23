@@ -52,7 +52,7 @@ export function normalizeStoredDsvStatus(value) {
   return String(value || '').trim();
 }
 
-function operationalStatus(record) {
+export function operationalStatus(record) {
   const value = normalizeStoredDsvStatus(record.dsvStatus).toLocaleLowerCase('it-IT');
   if (DSV_DELIVERY_EVENT_STATUSES.some((status) => status.toLocaleLowerCase('it-IT') === value)) return 'Da gestire';
   if (/consegnat|delivered/.test(value)) return 'Consegnata';
@@ -62,6 +62,7 @@ function operationalStatus(record) {
   if (/prenotat|booked/.test(value)) return 'Prenotata';
   if (/errore beta|verificare manualmente/.test(value)) return 'Verifica incompleta';
   if (/non trovata|intervento manuale|eccezione dsv/.test(value)) return 'Da gestire';
+  if (value && value !== 'non verificato') return 'Da gestire';
   if (record.prestaStatus === 'Tracking già presente') return 'Tracking già presente';
   if (/errore|non trovato|ambiguo/.test(String(record.prestaStatus || '').toLocaleLowerCase('it-IT'))) return 'Da gestire';
   return 'In attesa di verifica DSV';

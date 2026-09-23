@@ -481,6 +481,8 @@ function renderShipmentDsvTimeline(timeline, trackingUrl) {
 const DSV_DELIVERY_EVENT_STATUSES = ['Consegna riprogrammata', 'Tentativo non riuscito', 'Consegna rifiutata', 'In attesa del destinatario', 'Ritardo operativo', 'Reso al mittente'];
 const DSV_STATUS_ORDER = ['Prenotata', 'In transito', 'Centro di distribuzione', 'In consegna', ...DSV_DELIVERY_EVENT_STATUSES, 'Consegnata', 'Non verificato', 'Da verificare manualmente', 'Spedizione non trovata', 'Intervento manuale richiesto', 'Eccezione DSV', 'Errore beta'];
 const DSV_INTERNAL_ONLY_STATUSES = new Set(['Intervento manuale richiesto', 'Eccezione DSV']);
+const DSV_STANDARD_FILTER_STATUSES = ['Prenotata', 'In transito', 'Centro di distribuzione', 'In consegna', 'Consegnata', 'Non verificato'];
+const DSV_ATTENTION_FILTER_STATUSES = [...DSV_DELIVERY_EVENT_STATUSES, 'Spedizione non trovata', 'Da verificare manualmente', 'Errore beta'];
 
 function dsvFilterKind(status) {
   const normalized = status.toLocaleLowerCase('it-IT');
@@ -501,7 +503,7 @@ function renderDsvStatusFilters(counts = {}, archivedCount = 0, attentionTotal =
   const exceptionActive = Boolean($('#control-exceptions')?.checked);
   const total = Object.values(counts).reduce((sum, count) => sum + Number(count || 0), 0);
   const statuses = [...new Set([...DSV_STATUS_ORDER, ...Object.keys(counts)])]
-    .filter((status) => !DSV_INTERNAL_ONLY_STATUSES.has(status) && (!DSV_DELIVERY_EVENT_STATUSES.includes(status) || Number(counts[status] || 0) > 0))
+    .filter((status) => !DSV_INTERNAL_ONLY_STATUSES.has(status))
     .sort((left, right) => {
     const leftIndex = DSV_STATUS_ORDER.indexOf(left);
     const rightIndex = DSV_STATUS_ORDER.indexOf(right);
@@ -510,15 +512,22 @@ function renderDsvStatusFilters(counts = {}, archivedCount = 0, attentionTotal =
   const select = $('#control-dsv-filter');
   statuses.forEach((status) => { if (![...select.options].some((option) => option.value === status)) select.add(new Option(status, status)); });
   if (![...select.options].some((option) => option.value === 'Archiviate')) select.add(new Option('Archiviate', 'Archiviate'));
-  const statusButtons = statuses.map((status) => {
+  const statusButton = (status, isNew = false) => {
     const count = Number(counts[status] || 0);
     const active = activeStatus === status && !exceptionActive;
-    return `<button type="button" class="control-quick-filter ${dsvFilterKind(status)}${active ? ' active' : ''}${count === 0 ? ' zero' : ''}" data-dsv-status="${escapeHtml(status)}" aria-pressed="${active}" title="${escapeHtml(status)}: ${count} spedizioni"><span>${escapeHtml(status)}</span><strong>${count}</strong></button>`;
-  }).join('');
+    return `<button type="button" class="control-quick-filter ${dsvFilterKind(status)}${active ? ' active' : ''}${count === 0 ? ' zero' : ''}" data-dsv-status="${escapeHtml(status)}" aria-pressed="${active}" title="${escapeHtml(status)}: ${count} spedizioni${isNew ? ' · nuovo stato da classificare' : ''}"><span>${escapeHtml(status)}</span>${isNew ? '<em>Nuovo</em>' : ''}<strong>${count}</strong></button>`;
+  };
   const allActive = !activeStatus && !exceptionActive && controlMetricFilter === 'all';
   const archivedActive = activeStatus === 'Archiviate';
   const archivedButton = `<button type="button" class="control-quick-filter archived${archivedActive ? ' active' : ''}${archivedCount === 0 ? ' zero' : ''}" data-dsv-status="Archiviate" aria-pressed="${archivedActive}" title="Spedizioni archiviate: ${archivedCount}"><span>Archiviate</span><strong>${archivedCount}</strong></button>`;
-  bar.innerHTML = `<span class="filter-bar-label">Stati ed esiti DSV</span><button type="button" class="control-quick-filter${allActive ? ' active' : ''}" data-control-filter="all" aria-pressed="${allActive}"><span>Tutte</span><strong>${total}</strong></button>${statusButtons}${archivedButton}`;
+  const standardButtons = DSV_STANDARD_FILTER_STATUSES.map((status) => statusButton(status)).join('');
+  const attentionButtons = DSV_ATTENTION_FILTER_STATUSES.map((status) => statusButton(status)).join('');
+  const knownStatuses = new Set([...DSV_STANDARD_FILTER_STATUSES, ...DSV_ATTENTION_FILTER_STATUSES]);
+  const newStatuses = statuses.filter((status) => !knownStatuses.has(status)).map((status) => statusButton(status, true)).join('');
+  const attentionCount = Number(attentionTotal ?? 0);
+  bar.innerHTML = `<div class="control-filter-row" role="group" aria-labelledby="control-standard-filter-label"><span class="filter-bar-label" id="control-standard-filter-label">Stati spedizione</span><div class="control-filter-options"><button type="button" class="control-quick-filter${allActive ? ' active' : ''}" data-control-filter="all" aria-pressed="${allActive}"><span>Tutte</span><strong>${total}</strong></button>${standardButtons}</div></div><div class="control-filter-row attention-row" role="group" aria-labelledby="control-attention-filter-label"><span class="filter-bar-label" id="control-attention-filter-label">Da gestire</span><div class="control-filter-options"><button type="button" class="control-quick-filter attention-summary${exceptionActive ? ' active' : ''}${attentionCount === 0 ? ' zero' : ''}" data-control-filter="attention" aria-pressed="${exceptionActive}" title="Tutte le spedizioni da gestire: ${attentionCount}"><span>Tutte da gestire</span><strong>${attentionCount}</strong></button>${attentionButtons}${newStatuses}</div></div>`;
+  const archiveSlot = $('#control-archive-filter-slot');
+  if (archiveSlot) archiveSlot.innerHTML = archivedButton;
 }
 
 function caseBadge(status) {
@@ -2320,8 +2329,8 @@ function setupControlWorkspace() {
   const initialEmptyCell = card.querySelector('#control-table tbody .control-empty');
   if (initialEmptyCell) initialEmptyCell.colSpan = card.querySelectorAll('#control-table thead th').length;
   card.querySelector('.control-heading > div').insertAdjacentHTML('beforeend', '<div class="control-meta"><span id="control-service-status" class="control-service-status" data-state="off" role="status" aria-live="polite">DSV tracking non attivo</span><span id="control-last-sync" class="control-last-sync" aria-live="polite"></span></div>');
-  card.querySelector('.control-filters').insertAdjacentHTML('beforebegin', '<nav id="control-quick-filters" class="control-quick-filters" aria-label="Filtra per stato DSV"><span class="filter-bar-label">Stati DSV</span><button type="button" class="control-quick-filter active" data-dsv-status=""><span>Tutte</span><strong>0</strong></button></nav>');
-  card.querySelector('.control-filters').insertAdjacentHTML('beforeend', '<label class="control-dsv-filter-label" hidden>Stato DSV<select id="control-dsv-filter"><option value="">Tutti gli esiti DSV</option><option>Prenotata</option><option>In transito</option><option>Centro di distribuzione</option><option>In consegna</option><option>Consegnata</option><option>Non verificato</option><option>Da verificare manualmente</option><option>Errore beta</option><option>Spedizione non trovata</option><option>Intervento manuale richiesto</option><option>Eccezione DSV</option><option value="Archiviate">Archiviate</option></select></label><div class="control-filters-right"><label class="control-date-label"><span>Controllato dal</span><input id="control-date-filter" type="date"></label><button id="control-clear-filters" type="button" class="secondary control-clear-filters" hidden>Pulisci filtri</button></div>');
+  card.querySelector('.control-filters').insertAdjacentHTML('beforebegin', '<nav id="control-quick-filters" class="control-quick-filters" aria-label="Filtra per stato DSV"></nav>');
+  card.querySelector('.control-filters').insertAdjacentHTML('beforeend', '<label class="control-dsv-filter-label" hidden>Stato DSV<select id="control-dsv-filter"><option value="">Tutti gli esiti DSV</option><option>Prenotata</option><option>In transito</option><option>Centro di distribuzione</option><option>In consegna</option><option>Consegnata</option><option>Non verificato</option><option>Da verificare manualmente</option><option>Errore beta</option><option>Spedizione non trovata</option><option>Intervento manuale richiesto</option><option>Eccezione DSV</option><option value="Archiviate">Archiviate</option></select></label><div class="control-filters-right"><span id="control-archive-filter-slot" class="control-archive-filter-slot"></span><label class="control-date-label"><span>Controllato dal</span><input id="control-date-filter" type="date"></label><button id="control-clear-filters" type="button" class="secondary control-clear-filters" hidden>Pulisci filtri</button></div>');
   card.querySelector('.control-filters').insertAdjacentHTML('afterend', '<div id="control-mapping-alert" class="control-mapping-alert" hidden></div>');
   card.querySelector('.control-filters').insertAdjacentHTML('afterend', '<div id="control-bulk-bar" class="control-bulk-bar" hidden><strong id="control-bulk-count">0 selezionate</strong><span>Shift + clic seleziona un intervallo</span><button id="control-bulk-verify" type="button">Verifica DSV</button><button id="control-bulk-sync-prestashop" type="button" class="secondary">Allinea stato PrestaShop</button><button id="control-bulk-sync-tracking" type="button" class="secondary"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 8.5v4a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-4M8 1.5v8M5 6.5l3 3 3-3"/></svg><span>Invia tracking a PrestaShop</span></button><button id="control-bulk-export" type="button" class="secondary">Esporta CSV</button><button id="control-bulk-manage" type="button" class="secondary">Segna in lavorazione</button><button id="control-bulk-clear" type="button" class="secondary">Deseleziona</button></div>');
   $('#control-dsv-filter').addEventListener('change', () => { controlPage = 1; refreshControlCenter(); });
