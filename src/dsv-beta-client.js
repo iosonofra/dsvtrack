@@ -6,7 +6,7 @@ const TRACKING_POLL_TIMEOUT_MS = 18_000;
 const TRACKING_POLL_INTERVAL_MS = 700;
 const FAST_TRACKING_POLL_INTERVALS_MS = [250, 500, 800, 1200];
 const ULTRA_TRACKING_POLL_INTERVALS_MS = [150, 250, 400, 600];
-export const DSV_PARSER_VERSION = 6;
+export const DSV_PARSER_VERSION = 7;
 export const DEFAULT_DSV_TRACKING_URL = 'https://www.dsv.com/mydsv/tracking-public/?refNumber=TRACKINGDAINSERIRE&language_region=it-IT_IT';
 
 export const DSV_SPEED_PROFILES = Object.freeze({
@@ -407,8 +407,9 @@ export class DsvBetaClient {
       const snapshotResult = parseDsvStatusSnapshot(page);
       const deliveryEvent = domResult && DELIVERY_EVENT_OUTCOMES.has(domResult.status);
       const candidates = [snapshotResult, domResult].filter(Boolean).sort((a, b) => b.confidence - a.confidence);
-      // Lo storico con evento negativo datato prevale sul riepilogo generico "In consegna".
-      if (deliveryEvent && snapshotResult.status === 'In consegna' && domResult.statusAt) candidates.unshift(domResult);
+      // Un esito di consegna datato prevale su qualsiasi riepilogo di fase precedente.
+      // Un riepilogo "Consegnata" resta prioritario: può chiudere un tentativo fallito nello storico.
+      if (deliveryEvent && domResult.statusAt && snapshotResult.status !== 'Consegnata') candidates.unshift(domResult);
       const current = candidates[0];
       if (!best || current.confidence > best.confidence) best = current;
       if (current.status !== 'Da verificare manualmente') {
