@@ -1,4 +1,5 @@
 import { normalizeStoredDsvStatus } from './shipment-store.js';
+import { DSV_DELIVERY_EVENT_STATUSES, normalizeDsvSpeedProfile } from './dsv-beta-client.js';
 
 export function isWithinActiveHours(config = {}, date = new Date()) {
   if (!config.nightPause) return true;
@@ -212,7 +213,7 @@ export class DsvCronService {
         completed: 0,
         total: candidates.length,
         currentTracking: candidates[0].trackingNumber,
-        speedProfile: dsvBetaConfig.speedProfile === 'fast' ? 'fast' : 'safe',
+        speedProfile: normalizeDsvSpeedProfile(dsvBetaConfig.speedProfile),
       };
 
       betaClient = this.dsvBetaClientFactory(dsvBetaConfig);
@@ -286,9 +287,9 @@ export class DsvCronService {
           }
 
           // 2. Alert per Eccezioni e Blocchi
-          const isExceptionStatus = latestOutcome.status === 'Eccezione DSV' ||
+          const isExceptionStatus = DSV_DELIVERY_EVENT_STATUSES.includes(latestOutcome.status) ||
             latestOutcome.status === 'Intervento manuale richiesto' ||
-            Boolean(latestOutcome.reasonCode) ||
+            latestOutcome.reasonCode === 'DELIVERY_EVENT' ||
             /giacenza|fallit|mancat|rifiut/i.test(latestOutcome.status || '') ||
             /giacenza|fallit|mancat|rifiut/i.test(latestOutcome.detail || '');
 
@@ -298,6 +299,7 @@ export class DsvCronService {
         }
 
         this.activeProgress.completed = i + 1;
+        this.activeProgress.speedProfile = betaClient.getRuntimeProfile?.().effective || this.activeProgress.speedProfile;
 
         // Pacing anti-blocco tra le richieste se ce ne sono altre
         if (i < candidates.length - 1 && !this.cancelRequested) {
@@ -392,7 +394,7 @@ export class DsvCronService {
       const records = Object.values(db?.shipments || {});
       const totalActive = records.filter((r) => !r.archived && r.dsvStatus !== 'Consegnata').length;
       const deliveredToday = records.filter((r) => r.dsvStatus === 'Consegnata' && r.dsvCheckedAt && r.dsvCheckedAt.slice(0, 10) === todayKey).length;
-      const exceptions = records.filter((r) => !r.archived && (r.dsvStatus === 'Eccezione DSV' || r.caseStatus === 'Aperta')).length;
+      const exceptions = records.filter((r) => !r.archived && (DSV_DELIVERY_EVENT_STATUSES.includes(r.dsvStatus) || r.caseStatus === 'Aperta')).length;
       const thresholdMs = 48 * 3600_000;
       const delayed = records.filter((r) => !r.archived && r.dsvStatus !== 'Consegnata' && (now.getTime() - new Date(r.dsvCheckedAt || r.createdAt || 0).getTime()) > thresholdMs).length;
 

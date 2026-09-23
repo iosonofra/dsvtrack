@@ -1,7 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { findDsvStatusEvent, normalizeDsvTimeline, parseDsvEventDate } from './dsv-beta-client.js';
+import { DSV_DELIVERY_EVENT_STATUSES, findDsvStatusEvent, normalizeDsvTimeline, parseDsvEventDate } from './dsv-beta-client.js';
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const storePath = join(projectRoot, 'data', 'shipments.json');
@@ -54,6 +54,7 @@ export function normalizeStoredDsvStatus(value) {
 
 function operationalStatus(record) {
   const value = normalizeStoredDsvStatus(record.dsvStatus).toLocaleLowerCase('it-IT');
+  if (DSV_DELIVERY_EVENT_STATUSES.some((status) => status.toLocaleLowerCase('it-IT') === value)) return 'Da gestire';
   if (/consegnat|delivered/.test(value)) return 'Consegnata';
   if (/in consegna|out for delivery/.test(value)) return 'In consegna';
   if (/centro di distribuzione/.test(value)) return 'Centro di distribuzione';
@@ -135,6 +136,9 @@ export async function syncDsvShipments(results) {
     record.dsvStatus = nextDsvStatus;
     record.dsvDetail = result.detail || '';
     record.dsvRawStatus = result.rawStatus || '';
+    record.dsvEventReason = result.eventReason || '';
+    record.dsvEventLocation = result.eventLocation || '';
+    record.dsvPhaseStatus = result.phaseStatus || '';
     record.dsvEvidence = result.evidence || '';
     record.dsvConfidence = Number(result.confidence) || 0;
     record.dsvReasonCode = result.reasonCode || '';
@@ -250,7 +254,7 @@ export async function getControlCenter({ query = '', status = '', dsvStatus = ''
   const targetRecords = isArchivedView ? archivedRecords : activeRecords;
 
   const filteredWithoutPrestaState = targetRecords.filter((record) => {
-    const matchesQuery = !needle || [record.trackingNumber, record.orderReference, record.orderId, record.dsvStatus].some((value) => String(value || '').toLocaleLowerCase('it-IT').includes(needle));
+    const matchesQuery = !needle || [record.trackingNumber, record.orderReference, record.orderId, record.dsvStatus, record.dsvRawStatus, record.dsvEventReason].some((value) => String(value || '').toLocaleLowerCase('it-IT').includes(needle));
     const matchesStatus = matchesOperationalStatus(record.operationalStatus, status);
     const matchesDsvStatus = (!dsvStatus || dsvStatus === 'Archiviate') ? true : (record.dsvStatus || 'Non verificato') === dsvStatus;
     const matchesCheckedAfter = !checkedAfter || String(record.dsvCheckedAt || record.lastSeenAt || '') >= `${checkedAfter}T00:00:00.000Z`;
@@ -450,7 +454,7 @@ export async function getImportBatches() {
       const status = normalizeStoredDsvStatus(rec.dsvStatus);
       if (status === 'Consegnata') consegnate++;
       else if (['In transito', 'In consegna', 'Centro di distribuzione'].includes(status)) inTransito++;
-      else if (status === 'Eccezione DSV' || rec.operationalStatus === 'Da gestire') eccezioni++;
+      else if (DSV_DELIVERY_EVENT_STATUSES.includes(status) || rec.operationalStatus === 'Da gestire') eccezioni++;
       else altre++;
     }
 

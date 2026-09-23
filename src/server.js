@@ -5,7 +5,7 @@ import multer from 'multer';
 import { readDsvWorkbook } from './excel-import.js';
 import { PrestaShopClient } from './prestashop-client.js';
 import { exportSettingsData, loadSettings, normalizeCronSettings, normalizeDsvStateMappings, normalizeNotificationSettings, restoreSettingsData, saveSettings } from './settings-store.js';
-import { DEFAULT_DSV_TRACKING_URL, DSV_PARSER_VERSION, DSV_SPEED_PROFILES, DsvBetaClient, normalizeBetaSettings } from './dsv-beta-client.js';
+import { DEFAULT_DSV_TRACKING_URL, DSV_DELIVERY_EVENT_STATUSES, DSV_PARSER_VERSION, DSV_SPEED_PROFILES, DsvBetaClient, normalizeBetaSettings } from './dsv-beta-client.js';
 import { DsvCronService } from './dsv-cron.js';
 import { NotificationService } from './notification-service.js';
 import { archiveShipment, deleteArchivedShipment, deleteImportBatch, exportShipmentsData, getAuditLog, getControlCenter, getExistingShipmentsIndex, getImportBatches, getShipment, linkShipmentToPrestaShopOrder, registerImportBatch, restoreShipmentsData, syncAppliedShipments, syncDsvShipments, syncManualPrestaShopState, syncShipmentPrestaShopShipping, syncVerifiedShipments, updateShipmentCase } from './shipment-store.js';
@@ -247,8 +247,8 @@ app.post('/api/dsv-beta/jobs', (req, res) => {
         lastStatus: '',
         cachedCount: 0,
         errorCount: 0,
-        requestedSpeedProfile: connection.dsvBeta?.speedProfile === 'fast' ? 'fast' : 'safe',
-        effectiveSpeedProfile: connection.dsvBeta?.speedProfile === 'fast' ? 'fast' : 'safe',
+        requestedSpeedProfile: connection.dsvBeta?.speedProfile || 'safe',
+        effectiveSpeedProfile: connection.dsvBeta?.speedProfile || 'safe',
         fallbackReason: '',
         queuedAt: new Date().toISOString(),
         startedAt: '',
@@ -422,7 +422,7 @@ app.post('/api/notifications/trigger-digest', async (_req, res) => {
     const todayKey = now.toISOString().slice(0, 10);
     const totalActive = records.filter((r) => !r.archived && r.dsvStatus !== 'Consegnata').length;
     const deliveredToday = records.filter((r) => r.dsvStatus === 'Consegnata' && r.dsvCheckedAt && r.dsvCheckedAt.slice(0, 10) === todayKey).length;
-    const exceptions = records.filter((r) => !r.archived && (r.dsvStatus === 'Eccezione DSV' || r.caseStatus === 'Aperta')).length;
+    const exceptions = records.filter((r) => !r.archived && (DSV_DELIVERY_EVENT_STATUSES.includes(r.dsvStatus) || r.caseStatus === 'Aperta')).length;
     const thresholdMs = 48 * 3600_000;
     const delayed = records.filter((r) => !r.archived && r.dsvStatus !== 'Consegnata' && (now.getTime() - new Date(r.dsvCheckedAt || r.createdAt || 0).getTime()) > thresholdMs).length;
 

@@ -6,7 +6,7 @@ const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const settingsPath = join(projectRoot, 'data', 'settings.json');
 
 export function normalizeDsvSpeedProfile(value) {
-  return value === 'fast' ? 'fast' : 'safe';
+  return ['fast', 'ultra'].includes(value) ? value : 'safe';
 }
 
 export function normalizeDsvStateMappings(value = {}) {
@@ -153,4 +153,3 @@ export async function restoreSettingsData(importedSettings, defaults = {}) {
   await saveSettings(merged);
   return merged;
 }
-
