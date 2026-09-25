@@ -384,14 +384,14 @@ function dsvBadge(status) {
   const label = status || 'Non verificato';
   const normalized = label.toLocaleLowerCase('it-IT');
   const kind = /consegna riprogrammata|consegna rifiutata|tentativo non riuscito|in attesa del destinatario|ritardo operativo|reso al mittente|intervento|eccezione/.test(normalized) ? 'attention' : normalized.includes('errore') || normalized.includes('verificare manualmente') ? 'incomplete' : normalized.includes('non trovato') ? 'warning' : normalized === 'non verificato' ? 'pending' : normalized.includes('consegnat') ? 'delivered' : /in transito|in consegna|centro di distribuzione/.test(normalized) ? 'transit' : normalized.includes('prenotat') ? 'booked' : 'unmapped';
-  return `<span class="dsv-result ${kind}">${escapeHtml(label)}</span>`;
+  return `<span class="dsv-result ${kind}" title="${escapeHtml(label)}">${escapeHtml(label)}</span>`;
 }
 
 function prestaShopBadge(status) {
   const label = status || 'Non disponibile';
   const normalized = label.toLocaleLowerCase('it-IT');
   const kind = /consegnat|delivered/.test(normalized) ? 'delivered' : /spedit|transit|consegna/.test(normalized) ? 'transit' : /prepar|pagament|prenot/.test(normalized) ? 'booked' : 'neutral';
-  return `<span class="prestashop-status ${kind}">${escapeHtml(label)}</span>`;
+  return `<span class="prestashop-status ${kind}" title="${escapeHtml(label)}">${escapeHtml(label)}</span>`;
 }
 
 function suggestedPrestaShopStateId(dsvStatus, states) {

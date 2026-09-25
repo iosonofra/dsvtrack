@@ -79,6 +79,19 @@ if ! id "${APP_USER}" >/dev/null 2>&1; then
     useradd -r -m -d "${APP_DIR}" -s /usr/sbin/nologin "${APP_USER}"
 fi
 
+SCRIPT_SOURCE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+if [ -d "${SCRIPT_SOURCE_DIR}/src" ] && [ "${SCRIPT_SOURCE_DIR}" != "${APP_DIR}" ]; then
+    echo "Copia dei file sorgenti correnti in ${APP_DIR}..."
+    mkdir -p "${APP_DIR}"
+    cp -r "${SCRIPT_SOURCE_DIR}"/* "${APP_DIR}/"
+    [ -f "${SCRIPT_SOURCE_DIR}/.env.example" ] && cp "${SCRIPT_SOURCE_DIR}/.env.example" "${APP_DIR}/"
+elif [ -n "${REPO_URL}" ] && [ ! -d "${APP_DIR}/src" ]; then
+    echo "Clonazione repository GitHub da ${REPO_URL}..."
+    mkdir -p "${APP_DIR}"
+    git clone "${REPO_URL}" "${APP_DIR}"
+fi
+
 mkdir -p "${APP_DIR}/data"
 mkdir -p "${APP_DIR}/data/camofox-profile"
 mkdir -p "${APP_DIR}/.cache/camoufox"

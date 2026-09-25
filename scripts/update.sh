@@ -17,7 +17,11 @@ cd "${APP_DIR}"
 echo "${BLUE}${BOLD}Aggiornamento DSV - Tracking Center...${NC}"
 
 echo "${YELLOW}==> 1/3 Scaricamento ultimi aggiornamenti da GitHub...${NC}"
-git pull
+if [ -d .git ]; then
+    git pull
+else
+    echo "Nessun repository Git rilevato (.git assente): aggiornamento basato su archivio/file locali."
+fi
 
 echo "${YELLOW}==> 2/3 Aggiornamento dipendenze...${NC}"
 if [ -f /etc/init.d/camofox ]; then
