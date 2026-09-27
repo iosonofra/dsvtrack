@@ -10,7 +10,7 @@ Un control center B2B logistico, sobrio e denso, ispirato al linguaggio operativ
 - Blu `#064bc4` per azioni primarie, selezione e focus.
 - Verde, ambra e rosso esclusivamente per stati semantici.
 - Sfondo grigio chiaro, superfici bianche, bordi sottili, raggi di 2–3 px e ombre minime.
-- Tipografia di sistema compatta, con numeri tabulari nei KPI e nelle date.
+- Inter variabile (`/fonts/inter-latin-wght-normal.woff2`) distribuito localmente per l'interfaccia, unificato con scala semantica a 6 livelli (floor 0.75rem / 12px) e feature OpenType (`cv05`, `cv08`); stack monospace nativo per codici spedizione (tracking DSV e ordini PrestaShop); numeri tabulari (`tabular-nums`, `slashed-zero`) globali per KPI, date e tabelle.
 - Tabelle con intestazione sticky, righe da circa 50 px, zebra molto leggera e hover esplicito.
 
 ## Interaction rules

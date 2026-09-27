@@ -11,7 +11,7 @@ import { NotificationService } from './notification-service.js';
 import { archiveShipment, deleteArchivedShipment, deleteImportBatch, exportShipmentsData, getAuditLog, getControlCenter, getExistingShipmentsIndex, getImportBatches, getShipment, linkShipmentToPrestaShopOrder, registerImportBatch, restoreShipmentsData, syncAppliedShipments, syncDsvShipments, syncManualPrestaShopState, syncShipmentPrestaShopShipping, syncVerifiedShipments, updateShipmentCase } from './shipment-store.js';
 
 const app = express();
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 const port = Number(process.env.PORT ?? 3000);
 const VERIFY_BATCH_SIZE = 30;
 const VERIFIED_IMPORT_TTL_MS = 15 * 60 * 1000;
@@ -59,8 +59,9 @@ const cronService = new DsvCronService({
 
 cronService.start();
 
-app.use(express.json());
-app.use(express.static('public'));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.use(express.static('public', { etag: false, maxAge: 0, setHeaders: (res) => res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate') }));
 
 function client() {
   if (!connection.baseUrl || !connection.apiKey) throw new Error('Inserisci URL e chiave Webservice di PrestaShop.');
@@ -498,6 +499,9 @@ app.get('/api/history/audit-log', async (req, res) => {
       query: req.query.query,
       dateFrom: req.query.dateFrom,
       dateTo: req.query.dateTo,
+      onlyErrors: req.query.onlyErrors === '1' || req.query.onlyErrors === 'true',
+      page: req.query.page,
+      pageSize: req.query.pageSize,
       limit: req.query.limit,
     });
     res.json(result);
@@ -513,7 +517,8 @@ app.get('/api/history/audit-log/export', async (req, res) => {
       query: req.query.query,
       dateFrom: req.query.dateFrom,
       dateTo: req.query.dateTo,
-      limit: 5000,
+      onlyErrors: req.query.onlyErrors === '1' || req.query.onlyErrors === 'true',
+      limit: 10000,
     });
 
     const csvRows = [
@@ -554,6 +559,7 @@ app.get('/api/control-center', async (req, res) => {
       archived: req.query.archived === '1' || req.query.archived === 'true',
       page: req.query.page,
       pageSize: req.query.pageSize,
+      sortDir: req.query.sortDir,
     });
     res.json({ ...result, stateMappings: normalizeDsvStateMappings(connection.dsvStateMappings) });
   } catch (error) { res.status(500).json({ error: error.message }); }
@@ -1111,7 +1117,14 @@ app.get('/api/import/apply-jobs/:jobId', (req, res) => {
   res.json({ status: job.status, progress: job.progress, result: job.status === 'complete' ? job.result : null, error: job.error });
 });
 
-app.use((error, _req, res, _next) => res.status(500).json({ error: error.message || 'Errore inatteso.' }));
+app.use((error, _req, res, _next) => {
+  const status = error.status || error.statusCode || 500;
+  let message = error.message || 'Errore inatteso.';
+  if (error.type === 'entity.too.large' || /too large/i.test(message) || error.code === 'LIMIT_FILE_SIZE') {
+    message = 'I dati o il file inviato superano il limite consentito dal server (50 MB).';
+  }
+  res.status(status).json({ error: message });
+});
 app.listen(port, () => console.log(`Importatore disponibile su http://localhost:${port}`));
 
 function chunks(items, size) {

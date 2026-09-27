@@ -120,7 +120,8 @@ export async function syncVerifiedShipments(rows) {
       currentState: row.currentState || previous.currentState || '—',
       prestaStatus: row.verification || row.validation || previous.prestaStatus || '',
       existingTracking: row.existingTracking || previous.existingTracking || '',
-      lastSeenAt: now(),
+      lastSeenAt: row.lastSeenAt || now(),
+      dsvCheckedAt: row.dsvCheckedAt || previous.dsvCheckedAt || null,
       events: previous.events || [],
     };
     addEvent(record, 'prestashop', record.prestaStatus, record.currentState);
@@ -237,7 +238,7 @@ export async function linkShipmentToPrestaShopOrder(trackingNumber, {
   return { ...record, archived: Boolean(record.archived), dsvStatus: normalizeStoredDsvStatus(record.dsvStatus), operationalStatus: operationalStatus(record) };
 }
 
-export async function getControlCenter({ query = '', status = '', dsvStatus = '', prestaState = '', checkedAfter = '', exceptionOnly = false, archived = false, page = 1, pageSize = 50 } = {}) {
+export async function getControlCenter({ query = '', status = '', dsvStatus = '', prestaState = '', checkedAfter = '', exceptionOnly = false, archived = false, page = 1, pageSize = 50, sortDir = 'desc' } = {}) {
   const db = await load();
   const needle = String(query).trim().toLocaleLowerCase('it-IT');
   const isArchivedView = archived === true || archived === '1' || archived === 'true' || dsvStatus === 'Archiviate';
@@ -271,12 +272,25 @@ export async function getControlCenter({ query = '', status = '', dsvStatus = ''
     return output;
   }, {});
   const normalizedPrestaState = String(prestaState || '').trim();
+  const normalizedSortDir = String(sortDir).toLowerCase() === 'asc' ? 'asc' : 'desc';
+  const isAscending = normalizedSortDir === 'asc';
+  const getSortTimestamp = (record) => String(record.dsvCheckedAt || record.lastSeenAt || '');
+
   const filtered = filteredWithoutPrestaState.filter((record) => {
     if (!normalizedPrestaState) return true;
     if (normalizedPrestaState === '__unlinked__') return !record.orderId;
     if (normalizedPrestaState === '__unavailable__') return Boolean(record.orderId) && !String(record.currentState || '').trim();
     return String(record.currentState || '').trim().toLocaleLowerCase('it-IT') === normalizedPrestaState.toLocaleLowerCase('it-IT');
-  }).sort((a, b) => String(b.lastSeenAt).localeCompare(String(a.lastSeenAt)));
+  }).sort((a, b) => {
+    const tsA = getSortTimestamp(a);
+    const tsB = getSortTimestamp(b);
+    if (!tsA && !tsB) return String(a.trackingNumber).localeCompare(String(b.trackingNumber));
+    if (!tsA) return 1;
+    if (!tsB) return -1;
+    const cmp = tsB.localeCompare(tsA);
+    if (cmp !== 0) return isAscending ? -cmp : cmp;
+    return String(a.trackingNumber).localeCompare(String(b.trackingNumber));
+  });
 
   const counts = activeRecords.reduce((output, record) => {
     output[record.operationalStatus] = (output[record.operationalStatus] || 0) + 1;
@@ -302,6 +316,7 @@ export async function getControlCenter({ query = '', status = '', dsvStatus = ''
     page: normalizedPage,
     pageSize: normalizedPageSize,
     totalPages,
+    sortDir: normalizedSortDir,
     records: filtered.slice(offset, offset + normalizedPageSize),
   };
 }
@@ -492,7 +507,16 @@ export async function deleteImportBatch(batchId) {
   return deleted;
 }
 
-export async function getAuditLog({ type = '', query = '', dateFrom = '', dateTo = '', limit = 300 } = {}) {
+export function isAuditEventError(ev) {
+  if (ev.type === 'error') return true;
+  const text = `${ev.label} ${ev.detail}`.toLowerCase();
+  if (/errore|fallit|non trovat|eccezione|rifiutat|anomali|non riuscit|annullat/i.test(text)) return true;
+  const dsv = String(ev.dsvStatus || '').toLowerCase();
+  if (/errore|tentativo non riuscito|reso|giacenza|eccezione|non trovata/i.test(dsv)) return true;
+  return false;
+}
+
+export async function getAuditLog({ type = '', query = '', dateFrom = '', dateTo = '', onlyErrors = false, page = 1, pageSize = 50, limit = null } = {}) {
   const db = await load();
   const needle = String(query || '').trim().toLowerCase();
   const allEvents = [];
@@ -500,6 +524,7 @@ export async function getAuditLog({ type = '', query = '', dateFrom = '', dateTo
   for (const record of Object.values(db.shipments || {})) {
     if (!Array.isArray(record.events)) continue;
     for (const event of record.events) {
+      const isError = isAuditEventError({ ...event, dsvStatus: record.dsvStatus });
       allEvents.push({
         at: event.at,
         type: event.type || 'info',
@@ -511,13 +536,24 @@ export async function getAuditLog({ type = '', query = '', dateFrom = '', dateTo
         currentState: record.currentState || '—',
         dsvStatus: normalizeStoredDsvStatus(record.dsvStatus) || '—',
         archived: Boolean(record.archived),
+        isError,
       });
     }
   }
 
   allEvents.sort((a, b) => String(b.at).localeCompare(String(a.at)));
 
+  const stats = {
+    total: allEvents.length,
+    prestashop: allEvents.filter((ev) => ev.type === 'prestashop').length,
+    dsv: allEvents.filter((ev) => ev.type === 'dsv').length,
+    errors: allEvents.filter((ev) => ev.isError).length,
+    importazioni: allEvents.filter((ev) => ev.type === 'importazione').length,
+    gestione: allEvents.filter((ev) => ev.type === 'gestione').length,
+  };
+
   const filtered = allEvents.filter((ev) => {
+    if (onlyErrors && !ev.isError) return false;
     if (type && ev.type !== type) return false;
     if (dateFrom && ev.at.slice(0, 10) < dateFrom) return false;
     if (dateTo && ev.at.slice(0, 10) > dateTo) return false;
@@ -536,8 +572,24 @@ export async function getAuditLog({ type = '', query = '', dateFrom = '', dateTo
     return true;
   });
 
+  const currentPage = Math.max(1, Number(page) || 1);
+  const size = Math.max(1, Math.min(200, Number(pageSize) || 50));
+  const totalPages = Math.ceil(filtered.length / size) || 1;
+
+  let eventsSlice;
+  if (limit !== null && limit !== undefined) {
+    eventsSlice = filtered.slice(0, Math.max(1, Number(limit)));
+  } else {
+    const startIndex = (currentPage - 1) * size;
+    eventsSlice = filtered.slice(startIndex, startIndex + size);
+  }
+
   return {
     total: filtered.length,
-    events: filtered.slice(0, Math.max(10, Number(limit) || 300)),
+    page: currentPage,
+    pageSize: size,
+    totalPages,
+    stats,
+    events: eventsSlice,
   };
 }

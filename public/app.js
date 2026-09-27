@@ -12,6 +12,7 @@ let controlRecords = [];
 let controlPage = 1;
 let controlMetricFilter = 'all';
 let controlPrestaStateFilter = '';
+let controlSortDir = 'desc';
 const PRESTA_UNLINKED_FILTER = '__unlinked__';
 const PRESTA_UNAVAILABLE_FILTER = '__unavailable__';
 const CONTROL_PAGE_SIZE = 50;
@@ -94,9 +95,10 @@ function selectedRows() { return previewRows.filter((row) => row.canApply && row
 function stateBadge(value) {
   const label = escapeHtml(value || '—');
   const normalized = String(value || '').toLocaleLowerCase('it-IT');
-  if (normalized.includes('preparazione in corso')) return `<span class="status-badge preparing">${label}</span>`;
-  if (normalized.includes('spedito')) return `<span class="status-badge shipped">${label}</span>`;
-  return `<span class="status-badge">${label}</span>`;
+  if (normalized.includes('consegnat')) return `<span class="prestashop-status delivered">${label}</span>`;
+  if (normalized.includes('preparazione in corso') || normalized.includes('pagamento') || normalized.includes('attesa')) return `<span class="prestashop-status booked">${label}</span>`;
+  if (normalized.includes('spedit') || normalized.includes('transito') || normalized.includes('consegna')) return `<span class="prestashop-status transit">${label}</span>`;
+  return `<span class="prestashop-status neutral">${label}</span>`;
 }
 
 function copyableValue(value, label = 'Valore', extraClass = '') {
@@ -390,7 +392,15 @@ function dsvBadge(status) {
 function prestaShopBadge(status) {
   const label = status || 'Non disponibile';
   const normalized = label.toLocaleLowerCase('it-IT');
-  const kind = /consegnat|delivered/.test(normalized) ? 'delivered' : /spedit|transit|consegna/.test(normalized) ? 'transit' : /prepar|pagament|prenot/.test(normalized) ? 'booked' : 'neutral';
+  const kind = /consegnat|delivered/.test(normalized)
+    ? 'delivered'
+    : /spedit|in transito|in consegna|out for delivery|shipped/.test(normalized)
+      ? 'transit'
+      : /prepar|pagament|prenot|processing|accettato|attesa/.test(normalized)
+        ? 'booked'
+        : /annullat|cancellat|rimborsat|errore|rifiutat|fallit|reso/.test(normalized)
+          ? 'attention'
+          : 'neutral';
   return `<span class="prestashop-status ${kind}" title="${escapeHtml(label)}">${escapeHtml(label)}</span>`;
 }
 
@@ -587,7 +597,7 @@ function positionControlPrestaFilter() {
   const trigger = $('#control-presta-filter-trigger');
   if (!menu || !trigger || menu.hidden) return;
   const rect = trigger.getBoundingClientRect();
-  const width = Math.min(292, window.innerWidth - 24);
+  const width = Math.min(312, window.innerWidth - 24);
   menu.style.width = `${width}px`;
   menu.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - width - 12))}px`;
   menu.style.top = `${Math.min(rect.bottom + 6, window.innerHeight - menu.offsetHeight - 12)}px`;
@@ -606,21 +616,106 @@ function renderControlPrestaFilter(data) {
       state,
       value: state === 'Ordine non collegato' ? PRESTA_UNLINKED_FILTER : state === 'Stato non disponibile' ? PRESTA_UNAVAILABLE_FILTER : state,
       count: Number(count),
+      isSpecial: state === 'Ordine non collegato' || state === 'Stato non disponibile',
     }))
     .sort((left, right) => {
       const leftSpecial = left.value.startsWith('__') ? 1 : 0;
       const rightSpecial = right.value.startsWith('__') ? 1 : 0;
       return leftSpecial - rightSpecial || right.count - left.count || left.state.localeCompare(right.state, 'it');
     });
+
   const activeLabel = prestaStateFilterLabel(controlPrestaStateFilter);
   label.textContent = controlPrestaStateFilter ? activeLabel : 'Stato PrestaShop';
   trigger.classList.toggle('active', Boolean(controlPrestaStateFilter));
   trigger.title = controlPrestaStateFilter ? `Filtro attivo: ${activeLabel}` : 'Filtra per stato PrestaShop';
-  menu.innerHTML = `<div class="control-column-filter-heading"><strong>Stato PrestaShop</strong><span>${total} spedizioni</span></div><div class="control-column-filter-options"><button type="button" class="control-column-filter-option${controlPrestaStateFilter ? '' : ' active'}" data-presta-state-filter="" aria-pressed="${!controlPrestaStateFilter}"><span>Tutti gli stati</span><strong>${total}</strong></button>${entries.map(({ state, value, count }) => `<button type="button" class="control-column-filter-option${controlPrestaStateFilter === value ? ' active' : ''}" data-presta-state-filter="${escapeHtml(value)}" aria-pressed="${controlPrestaStateFilter === value}"><span>${escapeHtml(state)}</span><strong>${count}</strong></button>`).join('')}</div>`;
+
+  const getStateDotKind = (state, isSpecial) => {
+    if (isSpecial) return 'warning';
+    const norm = String(state).toLocaleLowerCase('it-IT');
+    if (/consegnat|delivered/.test(norm)) return 'delivered';
+    if (/spedit|transit|consegna/.test(norm)) return 'transit';
+    if (/prepar|pagament|prenot|processing/.test(norm)) return 'booked';
+    return 'neutral';
+  };
+
+  const isAllActive = !controlPrestaStateFilter;
+
+  const headerMarkup = `
+    <div class="control-column-filter-heading">
+      <div class="control-column-filter-heading-left">
+        <strong>Filtra per Stato</strong>
+        <span class="control-column-filter-total-badge">${total} ${total === 1 ? 'ordine' : 'ordini'}</span>
+      </div>
+      ${controlPrestaStateFilter ? '<button type="button" class="control-column-filter-reset-btn" data-presta-state-filter="" title="Azzera filtro e mostra tutti gli ordini">Azzera</button>' : ''}
+    </div>
+  `;
+
+  const renderOption = ({ state, value, count, isSpecial }) => {
+    const isActive = controlPrestaStateFilter === value;
+    const dotKind = getStateDotKind(state, isSpecial);
+    return `
+      <button type="button" class="control-column-filter-option${isActive ? ' active' : ''}${isSpecial ? ' is-special' : ''}" data-presta-state-filter="${escapeHtml(value)}" aria-pressed="${isActive}">
+        <span class="control-column-filter-check" aria-hidden="true">
+          <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3.5 8.5 6.5 11.5 12.5 4.5"/>
+          </svg>
+        </span>
+        <span class="control-column-filter-dot ${dotKind}" aria-hidden="true"></span>
+        <span class="control-column-filter-label">${escapeHtml(state)}</span>
+        <strong class="control-column-filter-count">${count}</strong>
+      </button>
+    `;
+  };
+
+  const standardEntries = entries.filter((e) => !e.isSpecial);
+  const specialEntries = entries.filter((e) => e.isSpecial);
+
+  const allOptionMarkup = `
+    <button type="button" class="control-column-filter-option all-states${isAllActive ? ' active' : ''}" data-presta-state-filter="" aria-pressed="${isAllActive}">
+      <span class="control-column-filter-check" aria-hidden="true">
+        <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="3.5 8.5 6.5 11.5 12.5 4.5"/>
+        </svg>
+      </span>
+      <span class="control-column-filter-dot all" aria-hidden="true"></span>
+      <span class="control-column-filter-label">Tutti gli stati</span>
+      <strong class="control-column-filter-count">${total}</strong>
+    </button>
+  `;
+
+  const standardMarkup = standardEntries.map(renderOption).join('');
+  const specialMarkup = specialEntries.length
+    ? `<div class="control-column-filter-divider" role="separator"></div>
+       <div class="control-column-filter-section-title">Anomalie &amp; eccezioni</div>
+       ${specialEntries.map(renderOption).join('')}`
+    : '';
+
+  menu.innerHTML = `${headerMarkup}<div class="control-column-filter-options">${allOptionMarkup}${standardMarkup}${specialMarkup}</div>`;
   positionControlPrestaFilter();
 }
 
+function updateControlSortUi() {
+  const trigger = $('#control-sort-last-check');
+  const header = trigger?.closest('th');
+  const badge = $('#control-sort-badge');
+  if (!trigger) return;
+  const isAsc = controlSortDir === 'asc';
+  trigger.classList.toggle('is-asc', isAsc);
+  trigger.classList.toggle('is-desc', !isAsc);
+  if (header) {
+    header.setAttribute('aria-sort', isAsc ? 'ascending' : 'descending');
+  }
+  const currentText = isAsc ? 'dal meno recente al più recente (più vecchi prima)' : 'dal più recente al meno recente (più nuovi prima)';
+  const nextText = isAsc ? 'dal più recente al meno recente (più nuovi prima)' : 'dal meno recente al più recente (più vecchi prima)';
+  trigger.setAttribute('title', `Ordinamento attuale: ${currentText}. Clicca per invertire l’ordine (${nextText}).`);
+  trigger.setAttribute('aria-label', `Ordinamento per data ultimo controllo: ${currentText}. Clicca per ordinare ${nextText}.`);
+  if (badge) {
+    badge.textContent = isAsc ? 'Meno recenti' : 'Più recenti';
+  }
+}
+
 function renderControlCenter(data) {
+  if (data.sortDir) controlSortDir = data.sortDir;
   controlOverview = data;
   dsvStateMappings = data.stateMappings || dsvStateMappings;
   controlRecords = data.records || [];
@@ -681,13 +776,20 @@ function renderControlCenter(data) {
     const prestaCell = prestaState
       ? `<button type="button" class="control-presta-state-shortcut" data-presta-state-filter="${escapeHtml(prestaState)}" title="Mostra solo gli ordini in stato ${escapeHtml(prestaState)}" aria-label="Filtra per stato PrestaShop: ${escapeHtml(prestaState)}">${prestaShopBadge(prestaState)}</button>`
       : prestaShopBadge(row.currentState);
+    const dsvStatus = String(row.dsvStatus || '').trim();
+    const dsvCell = dsvStatus && dsvStatus !== 'Non verificato'
+      ? `<button type="button" class="control-dsv-state-shortcut" data-dsv-state-filter="${escapeHtml(dsvStatus)}" title="Mostra solo le spedizioni in stato ${escapeHtml(dsvStatus)}" aria-label="Filtra per stato DSV: ${escapeHtml(dsvStatus)}">${dsvBadge(dsvStatus)}</button>`
+      : dsvBadge(row.dsvStatus);
+    const hasEventDate = Boolean(row.dsvStatusAt);
+    const eventDateHtml = hasEventDate ? `<small title="Data e ora dichiarate da DSV">${displayDsvEventDate(row)}</small>` : '';
     const isSelected = controlSelectedTrackingNumbers.has(row.trackingNumber);
     const rowClasses = [row.trackingNumber === activeControlTrackingNumber ? 'active' : '', isSelected ? 'is-selected' : ''].filter(Boolean).join(' ');
-    return `<tr data-tracking="${escapeHtml(row.trackingNumber)}" class="${rowClasses}"><td class="control-select-cell"><label class="control-select-target" title="Seleziona ${escapeHtml(row.trackingNumber)}"><input class="control-row-select row-select" data-tracking="${escapeHtml(row.trackingNumber)}" type="checkbox" ${isSelected ? 'checked' : ''} aria-label="Seleziona spedizione ${escapeHtml(row.trackingNumber)}"><span class="sr-only">Seleziona spedizione ${escapeHtml(row.trackingNumber)}</span></label></td><td>${copyableValue(row.trackingNumber, 'Numero spedizione', 'tracking-val')}</td><td>${copyableValue(row.orderReference, 'Riferimento ordine', 'order-val')}</td><td><div class="dsv-state-cell">${dsvBadge(row.dsvStatus)}${archivedTag}${row.dsvPhaseStatus ? `<small>Fase: ${escapeHtml(row.dsvPhaseStatus)}</small>` : ''}<small title="Data e ora dichiarate da DSV">${displayDsvEventDate(row)}</small>${row.dsvEventReason ? `<small class="dsv-event-reason" title="${escapeHtml(row.dsvEventReason)}">${escapeHtml(row.dsvEventReason)}</small>` : ''}</div></td><td>${prestaCell}</td><td><div class="control-alignment-cell">${prestaShopStateAction(row)}</div></td><td><div class="control-check-cell"><span>${displayDateTime(checkedAt)}</span>${checkedAge ? `<small>${escapeHtml(checkedAge)}</small>` : ''}</div></td><td><button class="open-shipment secondary" data-tracking="${escapeHtml(row.trackingNumber)}" aria-label="Apri dettaglio della spedizione ${escapeHtml(row.trackingNumber)}"><span class="sr-only">Dettaglio</span><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5"/></svg></button></td></tr>`;
+    return `<tr data-tracking="${escapeHtml(row.trackingNumber)}" class="${rowClasses}"><td class="control-select-cell"><label class="control-select-target" title="Seleziona ${escapeHtml(row.trackingNumber)}"><input class="control-row-select row-select" data-tracking="${escapeHtml(row.trackingNumber)}" type="checkbox" ${isSelected ? 'checked' : ''} aria-label="Seleziona spedizione ${escapeHtml(row.trackingNumber)}"><span class="sr-only">Seleziona spedizione ${escapeHtml(row.trackingNumber)}</span></label></td><td>${copyableValue(row.trackingNumber, 'Numero spedizione', 'tracking-val')}</td><td>${copyableValue(row.orderReference, 'Riferimento ordine', 'order-val')}</td><td><div class="dsv-state-cell">${dsvCell}${archivedTag}${row.dsvPhaseStatus ? `<small>Fase: ${escapeHtml(row.dsvPhaseStatus)}</small>` : ''}${eventDateHtml}${row.dsvEventReason ? `<small class="dsv-event-reason" title="${escapeHtml(row.dsvEventReason)}">${escapeHtml(row.dsvEventReason)}</small>` : ''}</div></td><td>${prestaCell}</td><td><div class="control-alignment-cell">${prestaShopStateAction(row)}</div></td><td><div class="control-check-cell"><span>${displayDateTime(checkedAt)}</span>${checkedAge ? `<small>${escapeHtml(checkedAge)}</small>` : ''}</div></td><td><button class="open-shipment secondary" data-tracking="${escapeHtml(row.trackingNumber)}" aria-label="Apri dettaglio della spedizione ${escapeHtml(row.trackingNumber)}"><span class="sr-only">Dettaglio</span><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5"/></svg></button></td></tr>`;
   }).join('') : `<tr><td colspan="8" class="control-empty">${emptyMessage}</td></tr>`;
   updateControlSelectionUi(pageRecords);
   renderControlPager(filteredTotal, totalPages);
   updateControlFilterUi();
+  updateControlSortUi();
 }
 
 function renderControlPager(total, totalPages) {
@@ -792,8 +894,10 @@ function updateControlDsvProgress(progress, context = {}) {
   const requestedMode = progress.requestedSpeedProfile || dsvBetaSettings?.speedProfile || 'safe';
   const effectiveMode = progress.effectiveSpeedProfile || requestedMode;
 
+  const isTerminal = ['complete', 'failed', 'cancelled'].includes(jobState);
   container.hidden = false;
-  container.dataset.state = fallbackActive ? 'fallback' : jobState;
+  container.dataset.state = isTerminal ? jobState : (fallbackActive ? 'fallback' : jobState);
+  container.dataset.fallback = fallbackActive ? 'true' : 'false';
   container.setAttribute('aria-busy', ['queued', 'preparing', 'checking', 'waiting', 'syncing', 'running', 'cancelling'].includes(jobState) ? 'true' : 'false');
   $('#control-dsv-progress-bar').style.width = `${percentage}%`;
   $('#control-dsv-progress-text').textContent = `${completed} di ${total} · ${percentage}%`;
@@ -801,7 +905,26 @@ function updateControlDsvProgress(progress, context = {}) {
   track.setAttribute('aria-valuemax', String(total));
   track.setAttribute('aria-valuenow', String(completed));
   track.setAttribute('aria-valuetext', `${completed} spedizioni verificate su ${total}`);
-  $('#control-dsv-progress-phase').textContent = phaseLabels[progress.phase] || 'Verifica DSV in corso';
+
+  const title = $('#control-dsv-progress-title') || container.querySelector('.progress-heading strong');
+  if (title) {
+    if (jobState === 'complete') title.textContent = 'Verifica DSV completata';
+    else if (jobState === 'cancelled') title.textContent = 'Verifica DSV interrotta';
+    else if (jobState === 'failed') title.textContent = 'Verifica DSV fallita';
+    else if (jobState === 'queued') title.textContent = 'Verifica DSV in coda';
+    else title.textContent = 'Verifica DSV in corso';
+  }
+
+  const phaseElement = $('#control-dsv-progress-phase');
+  if (jobState === 'complete') {
+    phaseElement.textContent = errorCount > 0 ? `Controllo terminato (${errorCount} con anomalie)` : 'Tutte le spedizioni verificate con successo';
+  } else if (jobState === 'cancelled') {
+    phaseElement.textContent = 'Operazione annullata dall’utente';
+  } else if (jobState === 'failed') {
+    phaseElement.textContent = 'Operazione interrotta a causa di un errore';
+  } else {
+    phaseElement.textContent = phaseLabels[progress.phase] || 'Verifica DSV in corso';
+  }
 
   const tracking = $('#control-dsv-progress-tracking');
   tracking.textContent = progress.currentTracking || '';
@@ -822,15 +945,18 @@ function updateControlDsvProgress(progress, context = {}) {
 
   const eta = $('#control-dsv-progress-eta');
   eta.textContent = remainingMs ? `Circa ${formatControlProgressDuration(remainingMs)} rimanenti` : 'Calcolo della stima…';
-  eta.hidden = jobState === 'queued' || completed >= total || ['cancelled', 'failed'].includes(jobState);
+  eta.hidden = jobState === 'queued' || completed >= total || ['cancelled', 'failed', 'complete'].includes(jobState);
 
   const counts = $('#control-dsv-progress-counts');
   counts.textContent = `${cachedCount} da cache · ${errorCount} errori`;
   counts.hidden = cachedCount === 0 && errorCount === 0;
+  counts.classList.toggle('has-errors', errorCount > 0);
 
   const outcome = $('#control-dsv-progress-outcome');
   outcome.textContent = progress.lastStatus ? `Ultimo esito: ${progress.lastStatus}` : '';
   outcome.hidden = !progress.lastStatus;
+  const isOutcomeError = Boolean(progress.lastStatus && /errore|fallit|error|failed/i.test(progress.lastStatus));
+  outcome.classList.toggle('is-error', isOutcomeError);
 
   const cancelButton = $('#control-dsv-cancel');
   const cancellable = ['queued', 'running', 'preparing', 'checking', 'waiting'].includes(jobState);
@@ -1182,6 +1308,7 @@ async function refreshControlCenter() {
   if (controlMetricFilter === 'delivered') params.set('status', 'Consegnata');
   params.set('page', activeBatchFilter ? '1' : String(controlPage));
   params.set('pageSize', activeBatchFilter ? '500' : String(CONTROL_PAGE_SIZE));
+  if (controlSortDir) params.set('sortDir', controlSortDir);
   try {
     renderControlCenter(await request(`/api/control-center?${params}`));
     $('#control-last-sync').textContent = `Elenco aggiornato alle ${new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}`;
@@ -2206,6 +2333,52 @@ function setupWorkspace() {
       </div>
     </div>
     <div id="history-audit-tab" class="history-tab-pane" hidden>
+      <div class="audit-kpi-grid" id="audit-kpi-grid" role="region" aria-label="Riepilogo metriche audit">
+        <button type="button" class="audit-kpi-card active" data-audit-kpi="all" id="audit-kpi-total">
+          <div class="audit-kpi-header">
+            <span class="audit-kpi-title">Totale Eventi</span>
+            <span class="audit-kpi-icon all" aria-hidden="true">
+              <svg viewBox="0 0 20 20" width="16" height="16" fill="currentColor"><path fill-rule="evenodd" d="M4 4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4zm3 1.5a.5.5 0 0 0 0 1h6a.5.5 0 0 0 0-1H7zm0 3a.5.5 0 0 0 0 1h6a.5.5 0 0 0 0-1H7zm0 3a.5.5 0 0 0 0 1h4a.5.5 0 0 0 0-1H7z" clip-rule="evenodd"/></svg>
+            </span>
+          </div>
+          <strong class="audit-kpi-val" id="audit-kpi-val-total">0</strong>
+          <span class="audit-kpi-sub">Tutti gli eventi registrati</span>
+        </button>
+
+        <button type="button" class="audit-kpi-card" data-audit-kpi="prestashop" id="audit-kpi-prestashop">
+          <div class="audit-kpi-header">
+            <span class="audit-kpi-title">PrestaShop</span>
+            <span class="audit-kpi-icon prestashop" aria-hidden="true">
+              <svg viewBox="0 0 20 20" width="16" height="16" fill="currentColor"><path fill-rule="evenodd" d="M4 2a1 1 0 0 1 1 1v2.101a7.002 7.002 0 0 1 11.601 2.566 1 1 0 1 1-1.885.666A5.002 5.002 0 0 0 5.999 7H9a1 1 0 0 1 0 2H4a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1zm.008 9.047a1 1 0 0 1 1.885-.666A5.002 5.002 0 0 0 14.001 13H11a1 1 0 1 1 0-2h5a1 1 0 0 1 1 1v5a1 1 0 1 1-2 0v-2.101a7.002 7.002 0 0 1-11.601-2.566 1 1 0 0 1-.392-.286z" clip-rule="evenodd"/></svg>
+            </span>
+          </div>
+          <strong class="audit-kpi-val" id="audit-kpi-val-prestashop">0</strong>
+          <span class="audit-kpi-sub">Sincronizzazioni & allineamenti</span>
+        </button>
+
+        <button type="button" class="audit-kpi-card" data-audit-kpi="dsv" id="audit-kpi-dsv">
+          <div class="audit-kpi-header">
+            <span class="audit-kpi-title">Scansioni DSV</span>
+            <span class="audit-kpi-icon dsv" aria-hidden="true">
+              <svg viewBox="0 0 20 20" width="16" height="16" fill="currentColor"><path d="M8 16.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0zm8 0a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0z"/><path d="M1 4h10v9H1zM11 7h4l3 3v4h-7V7z"/></svg>
+            </span>
+          </div>
+          <strong class="audit-kpi-val" id="audit-kpi-val-dsv">0</strong>
+          <span class="audit-kpi-sub">Check portale corriere</span>
+        </button>
+
+        <button type="button" class="audit-kpi-card danger-card" data-audit-kpi="errors" id="audit-kpi-errors">
+          <div class="audit-kpi-header">
+            <span class="audit-kpi-title">Errori / Anomalie</span>
+            <span class="audit-kpi-icon error" aria-hidden="true">
+              <svg viewBox="0 0 20 20" width="16" height="16" fill="currentColor"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 1 1-2 0 1 1 0 0 1 2 0zm-1-8a1 1 0 0 0-1 1v3a1 1 0 0 0 2 0V6a1 1 0 0 0-1-1z" clip-rule="evenodd"/></svg>
+            </span>
+          </div>
+          <strong class="audit-kpi-val danger-val" id="audit-kpi-val-errors">0</strong>
+          <span class="audit-kpi-sub">Eccezioni, fallimenti, discrepanze</span>
+        </button>
+      </div>
+
       <div class="audit-toolbar">
         <div class="audit-type-pills" id="audit-type-filters">
           <button type="button" class="audit-pill-btn active" data-type="">Tutti gli eventi</button>
@@ -2213,16 +2386,39 @@ function setupWorkspace() {
           <button type="button" class="audit-pill-btn" data-type="dsv">🚚 Scansioni DSV</button>
           <button type="button" class="audit-pill-btn" data-type="prestashop">🔄 PrestaShop</button>
           <button type="button" class="audit-pill-btn" data-type="gestione">📦 Gestione & Note</button>
+          <button type="button" class="audit-pill-btn warning-pill" id="audit-only-errors-pill" data-only-errors="true" title="Filtra solo gli eventi contenenti errori o anomalie">
+            <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M7.938 2.016a.146.146 0 0 0-.054.057L1.027 13.74a.176.176 0 0 0-.002.183c.016.03.037.05.054.06.015.01.034.017.066.017h13.71c.03 0 .05-.007.065-.017a.168.168 0 0 0 .054-.06.176.176 0 0 0-.002-.183L8.12 2.073a.146.146 0 0 0-.054-.057.13.13 0 0 0-.128 0zm.062 4.484a.6.6 0 0 1 .6.6v2.5a.6.6 0 0 1-1.2 0V7.1a.6.6 0 0 1 .6-.6zm0 4.5a.75.75 0 1 1 0 1.5.75.75 0 0 1 0-1.5z"/></svg>
+            <span>Solo anomalie / errori</span>
+            <span class="audit-pill-count" id="audit-pill-error-count">0</span>
+          </button>
         </div>
         <div class="audit-search-row">
-          <input type="search" id="audit-search-input" placeholder="Cerca per tracking, ordine o dettaglio…">
-          <select id="audit-date-filter" aria-label="Periodo temporale">
-            <option value="">Tutto il periodo</option>
-            <option value="today">Oggi</option>
-            <option value="7d">Ultimi 7 giorni</option>
-            <option value="30d">Ultimi 30 giorni</option>
-          </select>
-          <button id="export-audit-csv-btn" type="button" class="secondary">
+          <div class="audit-search-input-wrap">
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+            <input type="search" id="audit-search-input" placeholder="Cerca per tracking, ordine o dettaglio…">
+          </div>
+          <div class="audit-date-controls">
+            <select id="audit-date-filter" aria-label="Periodo temporale">
+              <option value="">Tutto il periodo</option>
+              <option value="today">Oggi</option>
+              <option value="7d">Ultimi 7 giorni</option>
+              <option value="30d">Ultimi 30 giorni</option>
+              <option value="custom">Data personalizzata…</option>
+            </select>
+            <div id="audit-custom-dates" class="audit-custom-dates" hidden>
+              <label class="audit-date-input-wrap"><span>Da</span><input type="date" id="audit-date-from" aria-label="Data inizio"></label>
+              <label class="audit-date-input-wrap"><span>A</span><input type="date" id="audit-date-to" aria-label="Data fine"></label>
+            </div>
+          </div>
+          <label class="audit-page-size-wrap">
+            <span>Righe</span>
+            <select id="audit-page-size" aria-label="Righe per pagina">
+              <option value="25">25</option>
+              <option value="50" selected>50</option>
+              <option value="100">100</option>
+            </select>
+          </label>
+          <button id="export-audit-csv-btn" type="button" class="secondary" title="Scarica audit log completo in formato CSV applicando i filtri attivi">
             <svg viewBox="0 0 20 20" width="15" height="15" fill="currentColor"><path fill-rule="evenodd" d="M3 17a1 1 0 0 1 1-1h12a1 1 0 1 1 0 2H4a1 1 0 0 1-1-1zm3.293-7.707a1 1 0 0 1 1.414 0L9 10.586V3a1 1 0 1 1 2 0v7.586l1.293-1.293a1 1 0 1 1 1.414 1.414l-3 3a1 1 0 0 1-1.414 0l-3-3a1 1 0 0 1 0-1.414z" clip-rule="evenodd"/></svg>
             Esporta CSV
           </button>
@@ -2245,6 +2441,20 @@ function setupWorkspace() {
             <tr><td colspan="7" class="control-empty">Caricamento eventi in corso…</td></tr>
           </tbody>
         </table>
+      </div>
+      <div id="audit-pager" class="audit-pager">
+        <div class="audit-pager-info" id="audit-pager-info">Caricamento eventi…</div>
+        <div class="audit-pager-actions">
+          <button type="button" id="audit-prev-btn" class="secondary small-btn" disabled>
+            <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 12l-4-4 4-4"/></svg>
+            <span>Precedente</span>
+          </button>
+          <span class="audit-pager-current" id="audit-pager-current">Pagina 1 di 1</span>
+          <button type="button" id="audit-next-btn" class="secondary small-btn" disabled>
+            <span>Successiva</span>
+            <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg>
+          </button>
+        </div>
       </div>
     </div>
     <dialog id="delete-batch-dialog" class="delete-batch-dialog" aria-labelledby="delete-batch-title">
@@ -2325,6 +2535,18 @@ function setupControlWorkspace() {
     prestaHeader.classList.add('control-filterable-header');
     prestaHeader.innerHTML = '<button id="control-presta-filter-trigger" type="button" class="control-column-filter-trigger" aria-haspopup="menu" aria-expanded="false"><span id="control-presta-filter-label">Stato PrestaShop</span><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></button>';
   }
+  const lastCheckHeader = [...card.querySelectorAll('#control-table thead th')].find((cell) => cell.textContent.trim().startsWith('Ultimo controllo'));
+  if (lastCheckHeader) {
+    lastCheckHeader.classList.add('control-sortable-header');
+    lastCheckHeader.innerHTML = '<button id="control-sort-last-check" type="button" class="control-column-sort-trigger is-desc" aria-label="Ordina per data ultimo controllo"><span class="control-sort-label">Ultimo controllo</span><span class="control-sort-indicator" aria-hidden="true"><svg class="control-sort-arrow" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v11M3.5 9l4.5 4.5 4.5-4.5"/></svg></span><span class="control-sort-badge" id="control-sort-badge">Più recenti</span></button>';
+    $('#control-sort-last-check')?.addEventListener('click', () => {
+      controlSortDir = controlSortDir === 'desc' ? 'asc' : 'desc';
+      controlPage = 1;
+      updateControlSortUi();
+      void refreshControlCenter();
+    });
+    updateControlSortUi();
+  }
   if (!$('#control-presta-filter-menu')) document.body.insertAdjacentHTML('beforeend', '<div id="control-presta-filter-menu" class="control-column-filter-menu" role="menu" aria-label="Filtra per stato PrestaShop" hidden></div>');
   const initialEmptyCell = card.querySelector('#control-table tbody .control-empty');
   if (initialEmptyCell) initialEmptyCell.colSpan = card.querySelectorAll('#control-table thead th').length;
@@ -2335,7 +2557,7 @@ function setupControlWorkspace() {
   card.querySelector('.control-filters').insertAdjacentHTML('afterend', '<div id="control-bulk-bar" class="control-bulk-bar" hidden><strong id="control-bulk-count">0 selezionate</strong><span>Shift + clic seleziona un intervallo</span><button id="control-bulk-verify" type="button">Verifica DSV</button><button id="control-bulk-sync-prestashop" type="button" class="secondary">Allinea stato PrestaShop</button><button id="control-bulk-sync-tracking" type="button" class="secondary"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 8.5v4a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-4M8 1.5v8M5 6.5l3 3 3-3"/></svg><span>Invia tracking a PrestaShop</span></button><button id="control-bulk-export" type="button" class="secondary">Esporta CSV</button><button id="control-bulk-manage" type="button" class="secondary">Segna in lavorazione</button><button id="control-bulk-clear" type="button" class="secondary">Deseleziona</button></div>');
   $('#control-dsv-filter').addEventListener('change', () => { controlPage = 1; refreshControlCenter(); });
   $('#control-date-filter').addEventListener('change', () => { controlPage = 1; refreshControlCenter(); });
-  $('#control-clear-filters').addEventListener('click', () => { if ($('#global-tracking-query')) $('#global-tracking-query').value = ''; if ($('#control-search-query')) $('#control-search-query').value = ''; if ($('#control-dsv-filter')) $('#control-dsv-filter').value = ''; if ($('#control-date-filter')) $('#control-date-filter').value = ''; if ($('#control-exceptions')) $('#control-exceptions').checked = false; controlMetricFilter = 'all'; controlPrestaStateFilter = ''; closeControlPrestaFilter(); controlPage = 1; refreshControlCenter(); });
+  $('#control-clear-filters').addEventListener('click', () => { if ($('#global-tracking-query')) $('#global-tracking-query').value = ''; if ($('#control-search-query')) $('#control-search-query').value = ''; if ($('#control-dsv-filter')) $('#control-dsv-filter').value = ''; if ($('#control-date-filter')) $('#control-date-filter').value = ''; if ($('#control-exceptions')) $('#control-exceptions').checked = false; controlMetricFilter = 'all'; controlPrestaStateFilter = ''; controlSortDir = 'desc'; updateControlSortUi(); closeControlPrestaFilter(); controlPage = 1; refreshControlCenter(); });
   $('#control-bulk-clear').addEventListener('click', () => { controlSelectedTrackingNumbers.clear(); lastControlSelectedTrackingNumber = ''; refreshControlCenter(); });
   $('#control-bulk-verify').addEventListener('click', () => $('#verify-control-selected').click());
   $('#control-bulk-sync-prestashop').addEventListener('click', openBulkPrestaShopDialog);
@@ -3728,6 +3950,13 @@ let activeHistorySubtab = 'batches';
 let auditTypeFilter = '';
 let auditSearchQuery = '';
 let auditDateFilter = '';
+let auditOnlyErrors = false;
+let auditDateFrom = '';
+let auditDateTo = '';
+let auditPage = 1;
+let auditPageSize = 50;
+let auditTotalPages = 1;
+let auditTotalRecords = 0;
 let historyBatchSearch = '';
 let historyBatchOrigin = '';
 let activeBatchFilter = null;
@@ -3763,12 +3992,66 @@ function setupHistorySection() {
     });
   });
 
-  const pillBtns = document.querySelectorAll('.audit-pill-btn');
+  const pillBtns = document.querySelectorAll('.audit-type-pills .audit-pill-btn:not(#audit-only-errors-pill)');
+  const errorPill = $('#audit-only-errors-pill');
+  const kpiCards = document.querySelectorAll('.audit-kpi-card');
+
+  function updateKpiAndPillActiveStates() {
+    kpiCards.forEach((c) => c.classList.remove('active'));
+    if (auditOnlyErrors) {
+      $('#audit-kpi-errors')?.classList.add('active');
+      errorPill?.classList.add('active');
+      pillBtns.forEach((b) => b.classList.remove('active'));
+    } else {
+      errorPill?.classList.remove('active');
+      pillBtns.forEach((b) => {
+        b.classList.toggle('active', (b.dataset.type || '') === auditTypeFilter);
+      });
+      if (auditTypeFilter === 'prestashop') {
+        $('#audit-kpi-prestashop')?.classList.add('active');
+      } else if (auditTypeFilter === 'dsv') {
+        $('#audit-kpi-dsv')?.classList.add('active');
+      } else {
+        $('#audit-kpi-total')?.classList.add('active');
+      }
+    }
+  }
+
   pillBtns.forEach((btn) => {
     btn.addEventListener('click', () => {
-      pillBtns.forEach((b) => b.classList.remove('active'));
-      btn.classList.add('active');
       auditTypeFilter = btn.dataset.type || '';
+      auditOnlyErrors = false;
+      auditPage = 1;
+      updateKpiAndPillActiveStates();
+      void loadAuditLog();
+    });
+  });
+
+  errorPill?.addEventListener('click', () => {
+    auditOnlyErrors = !auditOnlyErrors;
+    auditPage = 1;
+    updateKpiAndPillActiveStates();
+    void loadAuditLog();
+  });
+
+  kpiCards.forEach((card) => {
+    card.addEventListener('click', () => {
+      const kpi = card.dataset.auditKpi;
+      if (kpi === 'all') {
+        auditTypeFilter = '';
+        auditOnlyErrors = false;
+      } else if (kpi === 'prestashop') {
+        auditTypeFilter = 'prestashop';
+        auditOnlyErrors = false;
+      } else if (kpi === 'dsv') {
+        auditTypeFilter = 'dsv';
+        auditOnlyErrors = false;
+      } else if (kpi === 'errors') {
+        auditOnlyErrors = !auditOnlyErrors;
+        if (!auditOnlyErrors) auditTypeFilter = '';
+      }
+      auditPage = 1;
+      updateKpiAndPillActiveStates();
       void loadAuditLog();
     });
   });
@@ -3777,25 +4060,74 @@ function setupHistorySection() {
     clearTimeout(auditSearchDebounceTimer);
     auditSearchDebounceTimer = setTimeout(() => {
       auditSearchQuery = event.target.value.trim();
+      auditPage = 1;
       void loadAuditLog();
     }, 250);
   });
 
   $('#audit-date-filter')?.addEventListener('change', (event) => {
     auditDateFilter = event.target.value;
+    const customDates = $('#audit-custom-dates');
+    if (auditDateFilter === 'custom') {
+      if (customDates) customDates.hidden = false;
+      auditDateFrom = $('#audit-date-from')?.value || '';
+      auditDateTo = $('#audit-date-to')?.value || '';
+    } else {
+      if (customDates) customDates.hidden = true;
+      auditDateFrom = '';
+      auditDateTo = '';
+    }
+    auditPage = 1;
     void loadAuditLog();
+  });
+
+  $('#audit-date-from')?.addEventListener('change', (event) => {
+    auditDateFrom = event.target.value;
+    auditPage = 1;
+    void loadAuditLog();
+  });
+
+  $('#audit-date-to')?.addEventListener('change', (event) => {
+    auditDateTo = event.target.value;
+    auditPage = 1;
+    void loadAuditLog();
+  });
+
+  $('#audit-page-size')?.addEventListener('change', (event) => {
+    auditPageSize = Number(event.target.value) || 50;
+    auditPage = 1;
+    void loadAuditLog();
+  });
+
+  $('#audit-prev-btn')?.addEventListener('click', () => {
+    if (auditPage > 1) {
+      auditPage -= 1;
+      void loadAuditLog();
+    }
+  });
+
+  $('#audit-next-btn')?.addEventListener('click', () => {
+    if (auditPage < auditTotalPages) {
+      auditPage += 1;
+      void loadAuditLog();
+    }
   });
 
   $('#export-audit-csv-btn')?.addEventListener('click', () => {
     const params = new URLSearchParams();
     if (auditTypeFilter) params.set('type', auditTypeFilter);
     if (auditSearchQuery) params.set('query', auditSearchQuery);
+    if (auditOnlyErrors) params.set('onlyErrors', 'true');
+
     if (auditDateFilter === 'today') {
       params.set('dateFrom', new Date().toISOString().slice(0, 10));
     } else if (auditDateFilter === '7d') {
       params.set('dateFrom', new Date(Date.now() - 7 * 24 * 3600_000).toISOString().slice(0, 10));
     } else if (auditDateFilter === '30d') {
       params.set('dateFrom', new Date(Date.now() - 30 * 24 * 3600_000).toISOString().slice(0, 10));
+    } else if (auditDateFilter === 'custom') {
+      if (auditDateFrom) params.set('dateFrom', auditDateFrom);
+      if (auditDateTo) params.set('dateTo', auditDateTo);
     }
     window.location.href = `/api/history/audit-log/export?${params.toString()}`;
   });
@@ -3988,6 +4320,9 @@ async function loadAuditLog() {
   const params = new URLSearchParams();
   if (auditTypeFilter) params.set('type', auditTypeFilter);
   if (auditSearchQuery) params.set('query', auditSearchQuery);
+  if (auditOnlyErrors) params.set('onlyErrors', 'true');
+  params.set('page', String(auditPage));
+  params.set('pageSize', String(auditPageSize));
 
   if (auditDateFilter === 'today') {
     params.set('dateFrom', new Date().toISOString().slice(0, 10));
@@ -3995,28 +4330,92 @@ async function loadAuditLog() {
     params.set('dateFrom', new Date(Date.now() - 7 * 24 * 3600_000).toISOString().slice(0, 10));
   } else if (auditDateFilter === '30d') {
     params.set('dateFrom', new Date(Date.now() - 30 * 24 * 3600_000).toISOString().slice(0, 10));
+  } else if (auditDateFilter === 'custom') {
+    if (auditDateFrom) params.set('dateFrom', auditDateFrom);
+    if (auditDateTo) params.set('dateTo', auditDateTo);
   }
 
   try {
     const data = await request(`/api/history/audit-log?${params}`);
     const badge = $('#audit-count-badge');
-    if (badge) badge.textContent = data.total || 0;
+    if (badge) badge.textContent = data.stats?.total ?? data.total ?? 0;
+
+    // Aggiorna KPI cards riepilogative
+    if (data.stats) {
+      const kTotal = $('#audit-kpi-val-total');
+      const kPresta = $('#audit-kpi-val-prestashop');
+      const kDsv = $('#audit-kpi-val-dsv');
+      const kErrors = $('#audit-kpi-val-errors');
+      const pillErrCount = $('#audit-pill-error-count');
+      if (kTotal) kTotal.textContent = data.stats.total || 0;
+      if (kPresta) kPresta.textContent = data.stats.prestashop || 0;
+      if (kDsv) kDsv.textContent = data.stats.dsv || 0;
+      if (kErrors) kErrors.textContent = data.stats.errors || 0;
+      if (pillErrCount) pillErrCount.textContent = data.stats.errors || 0;
+
+      const kErrorsCard = $('#audit-kpi-errors');
+      if (kErrorsCard) {
+        kErrorsCard.classList.toggle('has-errors', (data.stats.errors || 0) > 0);
+      }
+    }
+
+    // Paginazione
+    auditPage = data.page || 1;
+    auditTotalPages = data.totalPages || 1;
+    auditTotalRecords = data.total || 0;
+
+    const start = auditTotalRecords === 0 ? 0 : (auditPage - 1) * auditPageSize + 1;
+    const end = Math.min(auditPage * auditPageSize, auditTotalRecords);
+    const pagerInfo = $('#audit-pager-info');
+    if (pagerInfo) pagerInfo.textContent = `Mostrati ${start}–${end} di ${auditTotalRecords} eventi`;
+    const pagerCurrent = $('#audit-pager-current');
+    if (pagerCurrent) pagerCurrent.textContent = `Pagina ${auditPage} di ${auditTotalPages}`;
+    const prevBtn = $('#audit-prev-btn');
+    if (prevBtn) prevBtn.disabled = auditPage <= 1;
+    const nextBtn = $('#audit-next-btn');
+    if (nextBtn) nextBtn.disabled = auditPage >= auditTotalPages;
 
     if (!data.events || !data.events.length) {
-      tbody.innerHTML = '<tr><td colspan="7" class="control-empty">Nessun evento registrato corrispondente ai filtri.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7" class="control-empty">Nessun evento registrato corrispondente ai filtri selezionati.</td></tr>';
       return;
     }
+
     tbody.innerHTML = data.events.map((ev) => {
       const typeClass = ev.type || 'info';
+      const isErr = Boolean(ev.isError);
+      const safeTrk = escapeHtml(ev.trackingNumber || '');
+      const safeOrder = escapeHtml(ev.orderReference || '');
+      const typeLabel = escapeHtml(ev.type || 'info');
+      const anomalyBadge = isErr ? '<span class="audit-anomaly-badge">⚠️ Anomalia</span>' : '';
+
+      const trackingCell = safeTrk
+        ? `<div class="audit-cell-copyable">
+             <button type="button" class="open-audit-tracking-btn text-button" data-tracking="${safeTrk}" title="Apri scheda dettaglio spedizione">${safeTrk}</button>
+             <button type="button" class="copyable-btn copy-icon-only" data-copy="${safeTrk}" data-copy-label="Tracking" title="Copia Tracking: ${safeTrk}" aria-label="Copia Tracking"><span class="copyable-icon-wrap" aria-hidden="true"><svg class="copy-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="8.5" height="8.5" rx="1.5"/><path d="M11 5V2.5A1.5 1.5 0 0 0 9.5 1h-7A1.5 1.5 0 0 0 1 2.5v7A1.5 1.5 0 0 0 2.5 11H5"/></svg><svg class="check-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5l3.5 3.5 6-7"/></svg></span></button>
+           </div>`
+        : '—';
+
+      const orderCell = safeOrder && safeOrder !== '—'
+        ? `<div class="audit-cell-copyable">
+             <span class="audit-order-text">${safeOrder}</span>
+             <button type="button" class="copyable-btn copy-icon-only" data-copy="${safeOrder}" data-copy-label="Riferimento Ordine" title="Copia Ordine: ${safeOrder}" aria-label="Copia Ordine"><span class="copyable-icon-wrap" aria-hidden="true"><svg class="copy-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="8.5" height="8.5" rx="1.5"/><path d="M11 5V2.5A1.5 1.5 0 0 0 9.5 1h-7A1.5 1.5 0 0 0 1 2.5v7A1.5 1.5 0 0 0 2.5 11H5"/></svg><svg class="check-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5l3.5 3.5 6-7"/></svg></span></button>
+           </div>`
+        : '—';
+
       return `
-        <tr>
-          <td>${displayDateTime(ev.at)}</td>
-          <td><span class="audit-type-badge ${escapeHtml(typeClass)}">${escapeHtml(ev.type || 'info')}</span></td>
-          <td><button type="button" class="open-audit-tracking-btn text-button" data-tracking="${escapeHtml(ev.trackingNumber)}" style="background:none;border:none;padding:0;color:var(--dsv-blue);cursor:pointer;font-family:monospace;font-weight:700;">${escapeHtml(ev.trackingNumber)}</button></td>
-          <td>${escapeHtml(ev.orderReference || '—')}</td>
+        <tr class="${isErr ? 'audit-row-error' : ''}">
+          <td class="audit-cell-time">${displayDateTime(ev.at)}</td>
+          <td>
+            <div class="audit-type-wrap">
+              <span class="audit-type-badge ${escapeHtml(typeClass)}">${typeLabel}</span>
+              ${anomalyBadge}
+            </div>
+          </td>
+          <td>${trackingCell}</td>
+          <td>${orderCell}</td>
           <td>${dsvBadge(ev.dsvStatus)}</td>
-          <td><strong>${escapeHtml(ev.label || '—')}</strong></td>
-          <td>${escapeHtml(ev.detail || '—')}</td>
+          <td><strong class="${isErr ? 'audit-label-error' : ''}">${escapeHtml(ev.label || '—')}</strong></td>
+          <td class="audit-cell-detail">${escapeHtml(ev.detail || '—')}</td>
         </tr>
       `;
     }).join('');
@@ -5084,6 +5483,16 @@ $('#control-table tbody').addEventListener('click', (event) => {
     controlPrestaStateFilter = stateFilterButton.dataset.prestaStateFilter || '';
     controlPage = 1;
     closeControlPrestaFilter();
+    refreshControlCenter();
+    return;
+  }
+  const dsvFilterButton = event.target.closest('.control-dsv-state-shortcut');
+  if (dsvFilterButton) {
+    const filterVal = dsvFilterButton.dataset.dsvStateFilter || '';
+    if ($('#control-dsv-filter')) $('#control-dsv-filter').value = filterVal;
+    if ($('#control-exceptions')) $('#control-exceptions').checked = false;
+    controlMetricFilter = 'all';
+    controlPage = 1;
     refreshControlCenter();
     return;
   }
