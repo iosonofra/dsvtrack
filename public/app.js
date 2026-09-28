@@ -529,13 +529,21 @@ function renderDsvStatusFilters(counts = {}, archivedCount = 0, attentionTotal =
   };
   const allActive = !activeStatus && !exceptionActive && controlMetricFilter === 'all';
   const archivedActive = activeStatus === 'Archiviate';
-  const archivedButton = `<button type="button" class="control-quick-filter archived${archivedActive ? ' active' : ''}${archivedCount === 0 ? ' zero' : ''}" data-dsv-status="Archiviate" aria-pressed="${archivedActive}" title="Spedizioni archiviate: ${archivedCount}"><span>Archiviate</span><strong>${archivedCount}</strong></button>`;
+  const archivedButton = `<button type="button" class="control-quick-filter archived${archivedActive ? ' active' : ''}${archivedCount === 0 ? ' zero' : ''}" data-dsv-status="Archiviate" aria-pressed="${archivedActive}" title="Spedizioni archiviate: ${archivedCount}"><svg class="archive-icon" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 4.5h12v9a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-9z"/><path d="M1 2h14v2.5H1z"/><path d="M6 7.5h4"/></svg><span>Archiviate</span><strong>${archivedCount}</strong></button>`;
   const standardButtons = DSV_STANDARD_FILTER_STATUSES.map((status) => statusButton(status)).join('');
   const attentionButtons = DSV_ATTENTION_FILTER_STATUSES.map((status) => statusButton(status)).join('');
   const knownStatuses = new Set([...DSV_STANDARD_FILTER_STATUSES, ...DSV_ATTENTION_FILTER_STATUSES]);
   const newStatuses = statuses.filter((status) => !knownStatuses.has(status)).map((status) => statusButton(status, true)).join('');
   const attentionCount = Number(attentionTotal ?? 0);
-  bar.innerHTML = `<div class="control-filter-row" role="group" aria-labelledby="control-standard-filter-label"><span class="filter-bar-label" id="control-standard-filter-label">Stati spedizione</span><div class="control-filter-options"><button type="button" class="control-quick-filter${allActive ? ' active' : ''}" data-control-filter="all" aria-pressed="${allActive}"><span>Tutte</span><strong>${total}</strong></button>${standardButtons}</div></div><div class="control-filter-row attention-row" role="group" aria-labelledby="control-attention-filter-label"><span class="filter-bar-label" id="control-attention-filter-label">Da gestire</span><div class="control-filter-options"><button type="button" class="control-quick-filter attention-summary${exceptionActive ? ' active' : ''}${attentionCount === 0 ? ' zero' : ''}" data-control-filter="attention" aria-pressed="${exceptionActive}" title="Tutte le spedizioni da gestire: ${attentionCount}"><span>Tutte da gestire</span><strong>${attentionCount}</strong></button>${attentionButtons}${newStatuses}</div></div>`;
+
+  const standardContainer = $('#control-standard-options');
+  const attentionContainer = $('#control-attention-options');
+  if (standardContainer && attentionContainer) {
+    standardContainer.innerHTML = `<button type="button" class="control-quick-filter${allActive ? ' active' : ''}" data-control-filter="all" aria-pressed="${allActive}"><span>Tutte</span><strong>${total}</strong></button>${standardButtons}`;
+    attentionContainer.innerHTML = `<button type="button" class="control-quick-filter attention-summary${exceptionActive ? ' active' : ''}${attentionCount === 0 ? ' zero' : ''}" data-control-filter="attention" aria-pressed="${exceptionActive}" title="Tutte le spedizioni da gestire: ${attentionCount}"><span>Tutte da gestire</span><strong>${attentionCount}</strong></button>${attentionButtons}${newStatuses}`;
+  } else {
+    bar.innerHTML = `<div class="control-filter-row" role="group" aria-labelledby="control-standard-filter-label"><span class="filter-bar-label" id="control-standard-filter-label">Stati spedizione</span><div class="control-filter-options"><div id="control-standard-options" class="control-status-group"><button type="button" class="control-quick-filter${allActive ? ' active' : ''}" data-control-filter="all" aria-pressed="${allActive}"><span>Tutte</span><strong>${total}</strong></button>${standardButtons}</div><div class="control-filters-right"><div class="control-filter-group"><span id="control-archive-filter-slot" class="control-archive-filter-slot"></span><span class="control-filter-divider" aria-hidden="true"></span><div class="control-date-box" id="control-date-box"><label class="control-date-label" for="control-date-filter"><svg class="date-icon" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="11" rx="1.5"/><path d="M2 6.5h12M5 1.5v3M11 1.5v3"/></svg><span>Controllato dal</span></label><input id="control-date-filter" type="date"><button type="button" id="control-date-clear" class="control-date-clear-btn" title="Azzera data" aria-label="Azzera data" hidden>✕</button></div></div><button id="control-clear-filters" type="button" class="secondary control-clear-filters" hidden>Pulisci filtri</button></div></div></div><div class="control-filter-row attention-row" role="group" aria-labelledby="control-attention-filter-label"><span class="filter-bar-label" id="control-attention-filter-label">Da gestire</span><div class="control-filter-options"><div id="control-attention-options" class="control-status-group"><button type="button" class="control-quick-filter attention-summary${exceptionActive ? ' active' : ''}${attentionCount === 0 ? ' zero' : ''}" data-control-filter="attention" aria-pressed="${exceptionActive}" title="Tutte le spedizioni da gestire: ${attentionCount}"><span>Tutte da gestire</span><strong>${attentionCount}</strong></button>${attentionButtons}${newStatuses}</div></div></div>`;
+  }
   const archiveSlot = $('#control-archive-filter-slot');
   if (archiveSlot) archiveSlot.innerHTML = archivedButton;
 }
@@ -567,11 +575,16 @@ function renderControlMappingAlert(counts = {}) {
 }
 
 function updateControlFilterUi() {
+  const hasDate = Boolean($('#control-date-filter')?.value);
+  const dateClearBtn = $('#control-date-clear');
+  const dateBox = $('#control-date-box');
+  if (dateClearBtn) dateClearBtn.hidden = !hasDate;
+  if (dateBox) dateBox.classList.toggle('has-value', hasDate);
   const hasFilters = Boolean(
     ($('#global-tracking-query')?.value || '').trim()
     || $('#control-dsv-filter')?.value
     || controlPrestaStateFilter
-    || $('#control-date-filter')?.value
+    || hasDate
     || $('#control-exceptions')?.checked
     || controlMetricFilter !== 'all'
   );
@@ -1171,24 +1184,24 @@ function openVerificationReportDialog(filterType) {
   const cachedCount = rows.filter((r) => r.cached).length;
   const attentionCount = rows.filter((r) => r.newStatus === 'Errore beta' || /intervento|eccezione|non trovat/i.test(r.newStatus)).length;
 
-  $('#report-kpi-grid').innerHTML = `
-    <div class="report-kpi-card ${updatedCount ? 'updated' : 'neutral'}">
-      <strong>${updatedCount}</strong>
-      <span>Stati aggiornati</span>
-    </div>
-    <div class="report-kpi-card unchanged">
-      <strong>${unchangedCount}</strong>
-      <span>Invariate / Confermate</span>
-    </div>
-    <div class="report-kpi-card ${cachedCount ? 'cached' : 'neutral'}">
-      <strong>${cachedCount}</strong>
-      <span>Da cache / Salto</span>
-    </div>
-    <div class="report-kpi-card ${attentionCount ? 'attention' : 'neutral'}">
-      <strong>${attentionCount}</strong>
-      <span>Errori / Eccezioni</span>
-    </div>
-  `;
+  const kpis = [
+    { id: 'all', count: total, label: 'Tutte', sub: 'Totale verificate', color: 'all' },
+    { id: 'updated', count: updatedCount, label: 'Aggiornate', sub: 'Stato variato', color: 'updated' },
+    { id: 'unchanged', count: unchangedCount, label: 'Invariate', sub: 'Stato confermato', color: 'unchanged' },
+    { id: 'cached', count: cachedCount, label: 'Da cache', sub: 'Senza chiamata live', color: 'cached' },
+    { id: 'attention', count: attentionCount, label: 'Errori / Eccezioni', sub: 'Verifica richiesta', color: 'attention' },
+  ];
+
+  $('#report-kpi-grid').innerHTML = kpis.map((kpi) => `
+    <button type="button" class="report-kpi-card ${kpi.color} ${activeReportFilter === kpi.id ? 'active' : ''}" data-report-filter="${kpi.id}" role="tab" aria-selected="${activeReportFilter === kpi.id}" title="Filtra per: ${escapeHtml(kpi.label)}">
+      <span class="report-kpi-top">
+        <strong class="report-kpi-num">${kpi.count}</strong>
+        <span class="report-kpi-dot" aria-hidden="true"></span>
+      </span>
+      <span class="report-kpi-label">${escapeHtml(kpi.label)}</span>
+      <span class="report-kpi-sub">${escapeHtml(kpi.sub)}</span>
+    </button>
+  `).join('');
 
   renderReportFilters({ total, updatedCount, unchangedCount, cachedCount, attentionCount });
   renderReportTableRows();
@@ -1197,22 +1210,22 @@ function openVerificationReportDialog(filterType) {
 }
 
 function renderReportFilters(counts) {
-  const filters = [
-    { id: 'all', label: 'Tutte', count: counts.total },
-    { id: 'updated', label: 'Aggiornate', count: counts.updatedCount },
-    { id: 'unchanged', label: 'Invariate', count: counts.unchangedCount },
-    { id: 'cached', label: 'Da cache', count: counts.cachedCount },
-  ];
-  if (counts.attentionCount > 0) {
-    filters.push({ id: 'attention', label: 'Errori / Eccezioni', count: counts.attentionCount });
-  }
-
-  $('#report-filters').innerHTML = filters.map((f) => `
-    <button type="button" class="report-filter-btn ${activeReportFilter === f.id ? 'active' : ''}" data-report-filter="${f.id}">
-      <span>${escapeHtml(f.label)}</span>
-      <strong>${f.count}</strong>
-    </button>
-  `).join('');
+  const container = $('#report-filters');
+  if (!container) return;
+  const filterNames = {
+    all: 'Tutte le spedizioni',
+    updated: 'Stati aggiornati',
+    unchanged: 'Invariate / Confermate',
+    cached: 'Da cache / Salto',
+    attention: 'Errori / Eccezioni',
+  };
+  const activeLabel = filterNames[activeReportFilter] || 'Tutte';
+  container.innerHTML = `
+    <div class="report-filter-status">
+      <span class="report-count-indicator">Filtro attivo: <strong>${escapeHtml(activeLabel)}</strong></span>
+      ${activeReportFilter !== 'all' ? `<button type="button" class="report-reset-filter-btn" data-report-filter="all">Mostra tutte</button>` : ''}
+    </div>
+  `;
 }
 
 function renderReportTableRows() {
@@ -1235,36 +1248,82 @@ function renderReportTableRows() {
   const tbody = $('#report-table tbody');
   if (!tbody) return;
   if (!filtered.length) {
-    tbody.innerHTML = '<tr><td colspan="8" class="control-empty">Nessuna spedizione corrisponde ai filtri selezionati.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" class="control-empty">Nessuna spedizione corrisponde ai filtri selezionati.</td></tr>';
     return;
   }
 
   tbody.innerHTML = filtered.map((row) => {
-    let changeBadge = '';
-    if (row.newStatus === 'Errore beta') {
-      changeBadge = '<span class="report-change error">! Errore</span>';
-    } else if (/intervento|eccezione/i.test(row.newStatus)) {
-      changeBadge = '<span class="report-change error">! Eccezione</span>';
-    } else if (row.isChanged) {
-      changeBadge = '<span class="report-change updated">↑ Aggiornato</span>';
+    const isError = row.newStatus === 'Errore beta';
+    const isAttention = !isError && /intervento|eccezione|non trovat/i.test(row.newStatus);
+    const isChanged = row.isChanged && !isError;
+
+    let rowClass = 'report-row';
+    if (isError || isAttention) rowClass += ' is-attention';
+    else if (isChanged) rowClass += ' is-updated';
+    else rowClass += ' is-unchanged';
+
+    let statusFlowHtml = '';
+    if (isError) {
+      statusFlowHtml = `
+        <div class="report-status-flow flow-error">
+          ${dsvBadge(row.prevStatus)}
+          <span class="report-flow-arrow" aria-hidden="true">→</span>
+          ${dsvBadge(row.newStatus)}
+          <span class="report-change error">! Errore</span>
+        </div>
+      `;
+    } else if (isAttention) {
+      statusFlowHtml = `
+        <div class="report-status-flow flow-attention">
+          ${dsvBadge(row.prevStatus)}
+          <span class="report-flow-arrow" aria-hidden="true">→</span>
+          ${dsvBadge(row.newStatus)}
+          <span class="report-change error">! Eccezione</span>
+        </div>
+      `;
+    } else if (isChanged) {
+      statusFlowHtml = `
+        <div class="report-status-flow flow-updated">
+          ${dsvBadge(row.prevStatus)}
+          <span class="report-flow-arrow" aria-hidden="true">→</span>
+          ${dsvBadge(row.newStatus)}
+          <span class="report-change updated">↑ Aggiornato</span>
+        </div>
+      `;
     } else {
-      changeBadge = '<span class="report-change same">= Invariato</span>';
+      statusFlowHtml = `
+        <div class="report-status-flow flow-unchanged">
+          ${dsvBadge(row.newStatus)}
+          <span class="report-status-confirmed">
+            <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="3.5 8.5 6.5 11.5 12.5 5.5"/>
+            </svg>
+            <span>Confermato</span>
+          </span>
+        </div>
+      `;
     }
 
     const sourceBadge = row.cached
       ? '<span class="report-source-cache" title="Spedizione già conclusa o letta da cache">Cache</span>'
       : '<span class="report-source-live" title="Letto in tempo reale da Camofox">DSV live</span>';
 
+    const dateTimeHtml = `
+      <div class="report-date-source-cell">
+        <span class="report-event-date">${displayDateTime(row.statusAt)}</span>
+        ${sourceBadge}
+      </div>
+    `;
+
     return `
-      <tr>
+      <tr class="${rowClass}" data-tracking="${escapeHtml(row.trackingNumber)}" title="Clicca per aprire la scheda di dettaglio">
         <td>${copyableValue(row.trackingNumber, 'Numero spedizione', 'tracking-val')}</td>
         <td>${copyableValue(row.orderReference, 'Riferimento ordine', 'order-val')}</td>
-        <td>${dsvBadge(row.prevStatus)}</td>
-        <td>${dsvBadge(row.newStatus)}</td>
-        <td>${changeBadge}</td>
-        <td>${displayDateTime(row.statusAt)}</td>
-        <td>${sourceBadge}</td>
-        <td><button type="button" class="open-shipment-from-report secondary" data-tracking="${escapeHtml(row.trackingNumber)}">Dettaglio ›</button></td>
+        <td>${statusFlowHtml}</td>
+        <td>${dateTimeHtml}</td>
+        <td class="report-action-cell">
+          <button type="button" class="open-shipment-from-report secondary" data-tracking="${escapeHtml(row.trackingNumber)}" aria-label="Dettaglio spedizione ${escapeHtml(row.trackingNumber)}">Dettaglio ›</button>
+        </td>
       </tr>
     `;
   }).join('');
@@ -2299,13 +2358,17 @@ function setupWorkspace() {
     <div class="control-heading history-heading">
       <div>
         <p class="eyebrow">TRACCIABILITÀ & AUDIT</p>
-        <h2>Storico & Registro Operazioni</h2>
+        <h2>Storico importazioni</h2>
         <p>Monitora i lotti di importazione e consulta l'audit log completo di tutti gli eventi di sistema.</p>
+        <div class="control-meta">
+          <span class="control-service-status" data-state="ready">Lotti &amp; Registro Operazioni</span>
+          <span class="control-last-sync" id="history-last-sync"></span>
+        </div>
       </div>
-      <div class="history-heading-actions">
-        <button id="refresh-history" type="button" class="secondary">
-          <svg viewBox="0 0 20 20" width="15" height="15" fill="currentColor"><path fill-rule="evenodd" d="M4 2a1 1 0 0 1 1 1v2.101a7.002 7.002 0 0 1 11.601 2.566 1 1 0 1 1-1.885.666A5.002 5.002 0 0 0 5.999 7H9a1 1 0 0 1 0 2H4a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1zm.008 9.047a1 1 0 0 1 1.885-.666A5.002 5.002 0 0 0 14.001 13H11a1 1 0 1 1 0-2h5a1 1 0 0 1 1 1v5a1 1 0 1 1-2 0v-2.101a7.002 7.002 0 0 1-11.601-2.566 1 1 0 0 1-.392-.286z" clip-rule="evenodd"/></svg>
-          Aggiorna
+      <div class="actions compact-actions history-heading-actions">
+        <button id="refresh-history" type="button" class="secondary" title="Ricarica storico lotti e audit log">
+          <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2v4h-4M2 14v-4h4"/><path d="M2.5 9a6 6 0 0 1 9.5-4.5L14 6M13.5 7a6 6 0 0 1-9.5 4.5L2 10"/></svg>
+          <span>Aggiorna elenco</span>
         </button>
       </div>
     </div>
@@ -2488,6 +2551,7 @@ function setupWorkspace() {
     window.controlSearchTimer = setTimeout(refreshControlCenter, 300);
   });
   $('#refresh-history').addEventListener('click', renderImportHistory);
+  $('#import-reload-catalog-btn')?.addEventListener('click', () => loadCatalog(false));
   $('#state-mapping-form').addEventListener('submit', saveStateMappings);
   setupBackupRestore();
   setupCronSection();
@@ -2520,7 +2584,7 @@ function setupWorkspace() {
 
 function setupControlWorkspace() {
   const card = $('.control-center-card');
-  card.querySelector('.control-heading h2').textContent = 'Coda spedizioni';
+  card.querySelector('.control-heading h2').textContent = 'Centro di controllo';
   card.querySelector('.control-heading p').textContent = 'Consulta lo stato, individua le eccezioni e avvia verifiche DSV senza modificare gli ordini.';
   const headerCells = [...card.querySelectorAll('#control-table thead th')];
   headerCells.find((cell) => cell.textContent.trim() === 'Gestione')?.remove();
@@ -2551,12 +2615,22 @@ function setupControlWorkspace() {
   const initialEmptyCell = card.querySelector('#control-table tbody .control-empty');
   if (initialEmptyCell) initialEmptyCell.colSpan = card.querySelectorAll('#control-table thead th').length;
   card.querySelector('.control-heading > div').insertAdjacentHTML('beforeend', '<div class="control-meta"><span id="control-service-status" class="control-service-status" data-state="off" role="status" aria-live="polite">DSV tracking non attivo</span><span id="control-last-sync" class="control-last-sync" aria-live="polite"></span></div>');
-  card.querySelector('.control-filters').insertAdjacentHTML('beforebegin', '<nav id="control-quick-filters" class="control-quick-filters" aria-label="Filtra per stato DSV"></nav>');
-  card.querySelector('.control-filters').insertAdjacentHTML('beforeend', '<label class="control-dsv-filter-label" hidden>Stato DSV<select id="control-dsv-filter"><option value="">Tutti gli esiti DSV</option><option>Prenotata</option><option>In transito</option><option>Centro di distribuzione</option><option>In consegna</option><option>Consegnata</option><option>Non verificato</option><option>Da verificare manualmente</option><option>Errore beta</option><option>Spedizione non trovata</option><option>Intervento manuale richiesto</option><option>Eccezione DSV</option><option value="Archiviate">Archiviate</option></select></label><div class="control-filters-right"><span id="control-archive-filter-slot" class="control-archive-filter-slot"></span><label class="control-date-label"><span>Controllato dal</span><input id="control-date-filter" type="date"></label><button id="control-clear-filters" type="button" class="secondary control-clear-filters" hidden>Pulisci filtri</button></div>');
+  card.querySelector('.control-filters').insertAdjacentHTML('beforebegin', `<nav id="control-quick-filters" class="control-quick-filters" aria-label="Filtra per stato DSV"><div class="control-filter-row" role="group" aria-labelledby="control-standard-filter-label"><span class="filter-bar-label" id="control-standard-filter-label">Stati spedizione</span><div class="control-filter-options"><div id="control-standard-options" class="control-status-group"></div><div class="control-filters-right"><div class="control-filter-group"><span id="control-archive-filter-slot" class="control-archive-filter-slot"></span><span class="control-filter-divider" aria-hidden="true"></span><div class="control-date-box" id="control-date-box"><label class="control-date-label" for="control-date-filter"><svg class="date-icon" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="11" rx="1.5"/><path d="M2 6.5h12M5 1.5v3M11 1.5v3"/></svg><span>Controllato dal</span></label><input id="control-date-filter" type="date"><button type="button" id="control-date-clear" class="control-date-clear-btn" title="Azzera data" aria-label="Azzera data" hidden>✕</button></div></div><button id="control-clear-filters" type="button" class="secondary control-clear-filters" hidden>Pulisci filtri</button></div></div></div><div class="control-filter-row attention-row" role="group" aria-labelledby="control-attention-filter-label"><span class="filter-bar-label" id="control-attention-filter-label">Da gestire</span><div class="control-filter-options"><div id="control-attention-options" class="control-status-group"></div></div></div></nav>`);
+  const legacyFilters = card.querySelector('.control-filters');
+  if (legacyFilters) {
+    legacyFilters.hidden = true;
+    legacyFilters.insertAdjacentHTML('beforeend', '<label class="control-dsv-filter-label" hidden>Stato DSV<select id="control-dsv-filter"><option value="">Tutti gli esiti DSV</option><option>Prenotata</option><option>In transito</option><option>Centro di distribuzione</option><option>In consegna</option><option>Consegnata</option><option>Non verificato</option><option>Da verificare manualmente</option><option>Errore beta</option><option>Spedizione non trovata</option><option>Intervento manuale richiesto</option><option>Eccezione DSV</option><option value="Archiviate">Archiviate</option></select></label>');
+  }
   card.querySelector('.control-filters').insertAdjacentHTML('afterend', '<div id="control-mapping-alert" class="control-mapping-alert" hidden></div>');
   card.querySelector('.control-filters').insertAdjacentHTML('afterend', '<div id="control-bulk-bar" class="control-bulk-bar" hidden><strong id="control-bulk-count">0 selezionate</strong><span>Shift + clic seleziona un intervallo</span><button id="control-bulk-verify" type="button">Verifica DSV</button><button id="control-bulk-sync-prestashop" type="button" class="secondary">Allinea stato PrestaShop</button><button id="control-bulk-sync-tracking" type="button" class="secondary"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 8.5v4a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-4M8 1.5v8M5 6.5l3 3 3-3"/></svg><span>Invia tracking a PrestaShop</span></button><button id="control-bulk-export" type="button" class="secondary">Esporta CSV</button><button id="control-bulk-manage" type="button" class="secondary">Segna in lavorazione</button><button id="control-bulk-clear" type="button" class="secondary">Deseleziona</button></div>');
   $('#control-dsv-filter').addEventListener('change', () => { controlPage = 1; refreshControlCenter(); });
-  $('#control-date-filter').addEventListener('change', () => { controlPage = 1; refreshControlCenter(); });
+  $('#control-date-filter').addEventListener('change', () => { controlPage = 1; updateControlFilterUi(); refreshControlCenter(); });
+  $('#control-date-clear')?.addEventListener('click', () => {
+    if ($('#control-date-filter')) $('#control-date-filter').value = '';
+    controlPage = 1;
+    updateControlFilterUi();
+    refreshControlCenter();
+  });
   $('#control-clear-filters').addEventListener('click', () => { if ($('#global-tracking-query')) $('#global-tracking-query').value = ''; if ($('#control-search-query')) $('#control-search-query').value = ''; if ($('#control-dsv-filter')) $('#control-dsv-filter').value = ''; if ($('#control-date-filter')) $('#control-date-filter').value = ''; if ($('#control-exceptions')) $('#control-exceptions').checked = false; controlMetricFilter = 'all'; controlPrestaStateFilter = ''; controlSortDir = 'desc'; updateControlSortUi(); closeControlPrestaFilter(); controlPage = 1; refreshControlCenter(); });
   $('#control-bulk-clear').addEventListener('click', () => { controlSelectedTrackingNumbers.clear(); lastControlSelectedTrackingNumber = ''; refreshControlCenter(); });
   $('#control-bulk-verify').addEventListener('click', () => $('#verify-control-selected').click());
@@ -2732,10 +2806,16 @@ function setupControlWorkspace() {
     const bounds = reportDialog.getBoundingClientRect();
     if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) reportDialog.close();
   });
+  $('#report-kpi-grid')?.addEventListener('click', (event) => {
+    const card = event.target.closest('.report-kpi-card');
+    if (!card) return;
+    activeReportFilter = card.dataset.reportFilter || 'all';
+    openVerificationReportDialog(activeReportFilter);
+  });
   $('#report-filters')?.addEventListener('click', (event) => {
-    const btn = event.target.closest('.report-filter-btn');
+    const btn = event.target.closest('[data-report-filter]');
     if (!btn) return;
-    activeReportFilter = btn.dataset.reportFilter;
+    activeReportFilter = btn.dataset.reportFilter || 'all';
     openVerificationReportDialog(activeReportFilter);
   });
   $('#report-search-input')?.addEventListener('input', (event) => {
@@ -2743,9 +2823,9 @@ function setupControlWorkspace() {
     renderReportTableRows();
   });
   $('#report-table tbody')?.addEventListener('click', (event) => {
-    const btn = event.target.closest('.open-shipment-from-report');
-    if (!btn) return;
-    const tracking = btn.dataset.tracking;
+    if (event.target.closest('.copyable-btn') || event.target.closest('.copyable-icon-wrap')) return;
+    const row = event.target.closest('tr[data-tracking]');
+    const tracking = row?.dataset.tracking;
     if (tracking) {
       reportDialog?.close();
       void openShipmentDetail(tracking);
@@ -4166,6 +4246,10 @@ function setupHistorySection() {
 }
 
 async function renderImportHistory() {
+  const lastSyncEl = $('#history-last-sync');
+  if (lastSyncEl) {
+    lastSyncEl.textContent = 'Elenco aggiornato alle ' + new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+  }
   if (activeHistorySubtab === 'batches') {
     await loadHistoryBatches();
   } else {
@@ -4755,6 +4839,10 @@ async function loadCatalog(silent = false) {
     if (savedState) {
       if ($('#state')) $('#state').value = savedState;
       if ($('#import-state')) $('#import-state').value = savedState;
+    }
+    const syncLabel = $('#import-catalog-sync-label');
+    if (syncLabel) {
+      syncLabel.textContent = 'Catalogo aggiornato alle ' + new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
     }
     if (!silent) {
       tell('#catalog-message', `${statuses.length} stati e ${carriers.length} corrieri disponibili.`, 'success');
