@@ -274,7 +274,9 @@ app.get('/api/dsv-beta/jobs/:jobId', (req, res) => {
   res.json({
     status: job.status,
     progress,
-    partialResults: job.results,
+    // Il polling richiede solo il conteggio: evitare di reinviare l'intero
+    // storico DSV a ogni richiesta, soprattutto nei controlli massivi.
+    partialCount: job.results.length,
     result: ['complete', 'cancelled', 'failed'].includes(job.status) ? job.result : null,
     error: job.error,
   });

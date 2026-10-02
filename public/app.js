@@ -40,7 +40,40 @@ const DSV_SPEED_LABELS = { safe: 'Affidabile', fast: 'Rapida', ultra: 'Ultra' };
 const DSV_SPEED_SETTINGS_LABELS = { safe: 'Affidabile', fast: 'Rapido controllato', ultra: 'Ultra' };
 const dsvSpeedLabel = (profile, settings = false) => (settings ? DSV_SPEED_SETTINGS_LABELS : DSV_SPEED_LABELS)[profile] || 'Affidabile';
 
-async function request(url, options) { const r = await fetch(url, options); const data = await r.json(); if (!r.ok) throw new Error(data.error); return data; }
+async function request(url, options) {
+  let response;
+  try {
+    response = await fetch(url, options);
+  } catch {
+    const error = new Error('Server temporaneamente non raggiungibile. Riprova tra poco.');
+    error.transient = true;
+    throw error;
+  }
+  let body;
+  try {
+    body = await response.text();
+  } catch {
+    const error = new Error('Risposta del server interrotta durante il trasferimento. Riprova tra poco.');
+    error.transient = true;
+    throw error;
+  }
+  let data;
+  try {
+    data = JSON.parse(body);
+  } catch {
+    const error = new Error(`Il server ha restituito una risposta non valida (HTTP ${response.status}). Riprova tra poco.`);
+    error.transient = true;
+    error.status = response.status;
+    throw error;
+  }
+  if (!response.ok) {
+    const error = new Error(data?.error || `Richiesta non riuscita (HTTP ${response.status}).`);
+    error.status = response.status;
+    error.transient = response.status >= 500 || response.status === 429;
+    throw error;
+  }
+  return data;
+}
 async function initialConfig() { const config = await request('/api/config'); $('#base-url').value = config.baseUrl; }
 function displayDate(value) { return value ? escapeHtml(value.replace(/^([0-9]{4})-([0-9]{2})-([0-9]{2})/, '$3/$2/$1')) : '—'; }
 function parseFlexibleDate(value) {
@@ -993,24 +1026,68 @@ function updateControlDsvProgress(progress, context = {}) {
 }
 
 async function waitForControlDsvBeta(jobId, context = {}) {
-  const snapshot = await request(`/api/dsv-beta/jobs/${jobId}`);
-  updateControlDsvProgress(snapshot.progress, { ...context, jobStatus: snapshot.status });
-  const partialCount = snapshot.partialResults?.length || 0;
-  if (partialCount > Number(context.renderedResults || 0)) {
-    context.renderedResults = partialCount;
-    await refreshControlCenter();
+  while (true) {
+    let snapshot;
+    try {
+      snapshot = await request(`/api/dsv-beta/jobs/${jobId}`);
+      if (!snapshot?.progress || !['queued', 'running', 'cancelling', 'complete', 'cancelled', 'failed'].includes(snapshot.status)) {
+        const error = new Error('Il server ha restituito uno stato della verifica non valido.');
+        error.transient = true;
+        throw error;
+      }
+      context.connectionFailures = 0;
+    } catch (error) {
+      if (!error.transient) throw error;
+      context.connectionFailures = Number(context.connectionFailures || 0) + 1;
+      if (context.connectionFailures > 10) {
+        error.recoverable = true;
+        throw error;
+      }
+      tell('#control-dsv-message', `Connessione al server temporaneamente persa. Nuovo tentativo ${context.connectionFailures} di 10; la verifica potrebbe essere ancora in corso.`, 'warning');
+      await new Promise((resolve) => setTimeout(resolve, Math.min(1000 * (2 ** Math.min(context.connectionFailures - 1, 3)), 8000)));
+      continue;
+    }
+    updateControlDsvProgress(snapshot.progress, { ...context, jobStatus: snapshot.status });
+    context.completed = Math.max(Number(context.completed || 0), Number(snapshot.progress?.completed || 0));
+    const savedJob = sessionStorage.getItem(CONTROL_DSV_JOB_STORAGE_KEY);
+    if (savedJob) {
+      try {
+        const saved = JSON.parse(savedJob);
+        if (saved.jobId === jobId && Number(saved.completed || 0) < context.completed) {
+          saved.completed = context.completed;
+          sessionStorage.setItem(CONTROL_DSV_JOB_STORAGE_KEY, JSON.stringify(saved));
+        }
+      } catch { /* Un dato locale non valido non deve interrompere il polling. */ }
+    }
+    const partialCount = Number(snapshot.partialCount ?? snapshot.partialResults?.length ?? 0);
+    if (partialCount - Number(context.renderedResults || 0) >= 5) {
+      context.renderedResults = partialCount;
+      await refreshControlCenter();
+    }
+    if (['queued', 'running', 'cancelling'].includes(snapshot.status)) {
+      tell('#control-dsv-message', '');
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      continue;
+    }
+    if (snapshot.status === 'failed') {
+      const error = new Error(snapshot.error || 'La verifica DSV non è riuscita.');
+      error.result = snapshot.result;
+      throw error;
+    }
+    return snapshot.result;
   }
-  if (['queued', 'running', 'cancelling'].includes(snapshot.status)) {
-    tell('#control-dsv-message', '');
-    await new Promise((resolve) => setTimeout(resolve, 750));
-    return waitForControlDsvBeta(jobId, context);
-  }
-  if (snapshot.status === 'failed') {
-    const error = new Error(snapshot.error || 'La verifica DSV non è riuscita.');
-    error.result = snapshot.result;
-    throw error;
-  }
-  return snapshot.result;
+}
+
+function markControlDsvConnectionState(recoverable) {
+  const progress = $('#control-dsv-progress');
+  if (!progress || progress.hidden) return;
+  progress.dataset.state = recoverable ? 'fallback' : 'failed';
+  progress.setAttribute('aria-busy', 'false');
+  const title = $('#control-dsv-progress-title');
+  if (title) title.textContent = recoverable ? 'Connessione al server interrotta' : 'Verifica DSV non ripristinabile';
+  const phase = $('#control-dsv-progress-phase');
+  if (phase) phase.textContent = recoverable ? 'Il job potrebbe proseguire sul server. Ricarica la pagina per riprenderlo.' : 'Il job non è più disponibile sul server.';
+  if ($('#control-dsv-progress-eta')) $('#control-dsv-progress-eta').hidden = true;
 }
 
 async function cancelControlDsvVerification() {
@@ -1094,25 +1171,32 @@ async function startControlDsvVerification(trackingNumbers) {
   const uniqueTrackingNumbers = [...new Set(trackingNumbers)];
   if (uniqueTrackingNumbers.length > maxRows) throw new Error(`Seleziona al massimo ${maxRows} spedizioni per operazione.`);
   if (activeControlDsvJobId) throw new Error('È già in corso una verifica DSV.');
+  if (sessionStorage.getItem(CONTROL_DSV_JOB_STORAGE_KEY)) throw new Error('Una verifica DSV precedente è in attesa di ripresa. Ricarica la pagina prima di avviarne un’altra.');
   const previousMap = controlDsvPreviousMap(uniqueTrackingNumbers);
   const operationStartedAt = new Date().toISOString();
+  const pollContext = { total: uniqueTrackingNumbers.length, operationStartedAt, renderedResults: 0, completed: 0 };
   $('#control-dsv-progress strong').textContent = 'Verifica DSV in corso';
   updateControlDsvProgress({ completed: 0, total: uniqueTrackingNumbers.length, phase: 'preparing', requestedSpeedProfile: dsvBetaSettings?.speedProfile }, { total: uniqueTrackingNumbers.length, operationStartedAt });
   tell('#control-dsv-message', '');
   try {
     const { jobId } = await request('/api/dsv-beta/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trackingNumbers: uniqueTrackingNumbers }) });
     activeControlDsvJobId = jobId;
-    sessionStorage.setItem(CONTROL_DSV_JOB_STORAGE_KEY, JSON.stringify({ jobId, trackingNumbers: uniqueTrackingNumbers, previous: [...previousMap], operationStartedAt }));
+    sessionStorage.setItem(CONTROL_DSV_JOB_STORAGE_KEY, JSON.stringify({ jobId, trackingNumbers: uniqueTrackingNumbers, previous: [...previousMap], operationStartedAt, completed: 0 }));
     updateControlSelectionUi([...document.querySelectorAll('.control-row-select')].map((input) => ({ trackingNumber: input.dataset.tracking })));
-    const result = await waitForControlDsvBeta(jobId, { total: uniqueTrackingNumbers.length, operationStartedAt, renderedResults: 0 });
+    const result = await waitForControlDsvBeta(jobId, pollContext);
     sessionStorage.removeItem(CONTROL_DSV_JOB_STORAGE_KEY);
     activeControlDsvJobId = '';
     return await finalizeControlDsvVerification(result, uniqueTrackingNumbers, previousMap);
   } catch (error) {
+    if (error.recoverable) {
+      markControlDsvConnectionState(true);
+      throw new Error(`Connessione persa dopo ${pollContext.completed} di ${uniqueTrackingNumbers.length} spedizioni. La verifica potrebbe continuare sul server: ricarica la pagina per riprenderla senza avviarne un’altra.`);
+    }
     sessionStorage.removeItem(CONTROL_DSV_JOB_STORAGE_KEY);
     activeControlDsvJobId = '';
+    markControlDsvConnectionState(false);
     await refreshControlCenter();
-    const partialCount = error.result?.results?.length || 0;
+    const partialCount = Math.max(Number(error.result?.results?.length || 0), pollContext.completed);
     throw new Error(`Verifica interrotta dopo ${partialCount} di ${uniqueTrackingNumbers.length} spedizioni: ${error.message}`);
   }
 }
@@ -1125,14 +1209,20 @@ async function resumeControlDsvVerification() {
     activeControlDsvJobId = saved.jobId;
     const previousMap = new Map(saved.previous || []);
     updateControlSelectionUi([...document.querySelectorAll('.control-row-select')].map((input) => ({ trackingNumber: input.dataset.tracking })));
-    const result = await waitForControlDsvBeta(saved.jobId, { total: saved.trackingNumbers.length, operationStartedAt: saved.operationStartedAt, renderedResults: 0 });
+    const context = { total: saved.trackingNumbers.length, operationStartedAt: saved.operationStartedAt, renderedResults: 0, completed: Number(saved.completed || 0) };
+    const result = await waitForControlDsvBeta(saved.jobId, context);
     sessionStorage.removeItem(CONTROL_DSV_JOB_STORAGE_KEY);
     activeControlDsvJobId = '';
     await finalizeControlDsvVerification(result, saved.trackingNumbers, previousMap);
   } catch (error) {
-    sessionStorage.removeItem(CONTROL_DSV_JOB_STORAGE_KEY);
-    activeControlDsvJobId = '';
-    tell('#control-dsv-message', `Impossibile riprendere la verifica: ${error.message}`, 'error');
+    if (!error.recoverable) {
+      sessionStorage.removeItem(CONTROL_DSV_JOB_STORAGE_KEY);
+      activeControlDsvJobId = '';
+    }
+    markControlDsvConnectionState(Boolean(error.recoverable));
+    tell('#control-dsv-message', error.recoverable
+      ? 'Connessione ancora assente: la verifica resta recuperabile. Ricarica la pagina quando il server torna disponibile.'
+      : `Impossibile riprendere la verifica: ${error.message}`, error.recoverable ? 'warning' : 'error');
   }
 }
 
@@ -1378,7 +1468,10 @@ async function refreshControlCenter() {
     renderControlCenter(await request(`/api/control-center?${params}`));
     $('#control-last-sync').textContent = `Elenco aggiornato alle ${new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}`;
   }
-  catch (e) { $('#control-table tbody').innerHTML = `<tr><td colspan="8" class="control-empty">${escapeHtml(e.message)}</td></tr>`; }
+  catch (e) {
+    if ($('#control-last-sync')) $('#control-last-sync').textContent = 'Elenco temporaneamente non aggiornabile';
+    if (!$('#control-table tbody').children.length) $('#control-table tbody').innerHTML = `<tr><td colspan="8" class="control-empty">${escapeHtml(e.message)}</td></tr>`;
+  }
 }
 
 function setupBackupRestore() {
@@ -5699,7 +5792,7 @@ window.addEventListener('scroll', () => {
 }, { passive: true });
 
 setupWorkspace();
-Promise.all([initialConfig(), loadDsvBeta(), refreshControlCenter(), loadCronStatus()])
+Promise.allSettled([initialConfig(), loadDsvBeta(), refreshControlCenter(), loadCronStatus()])
   .then(() => resumeControlDsvVerification())
   .catch(() => {});
 showView(location.hash.slice(1) || 'control');
