@@ -6,7 +6,7 @@ const TRACKING_POLL_TIMEOUT_MS = 18_000;
 const TRACKING_POLL_INTERVAL_MS = 700;
 const FAST_TRACKING_POLL_INTERVALS_MS = [250, 500, 800, 1200];
 const ULTRA_TRACKING_POLL_INTERVALS_MS = [150, 250, 400, 600];
-export const DSV_PARSER_VERSION = 8;
+export const DSV_PARSER_VERSION = 9;
 export const DEFAULT_DSV_TRACKING_URL = 'https://www.dsv.com/mydsv/tracking-public/?refNumber=TRACKINGDAINSERIRE&language_region=it-IT_IT';
 
 export const DSV_SPEED_PROFILES = Object.freeze({
@@ -170,10 +170,10 @@ export function timelineRowStatus(row) {
   if (/\b(?:non caricat|mancanza di capacit|ritardo operativo|capacity shortage)\b/i.test(value)) return 'Ritardo operativo';
   if (/\b(?:rifiutat[oa]|rifiuto|refused)\b/i.test(event)) return 'Consegna rifiutata';
   if (/\b(?:eccezion|exception)\b/i.test(value)) return 'Eccezione DSV';
+  if (/\b(?:partit[oa]|departed)\b/i.test(event)) return 'Partito';
   const canonical = canonicalDsvStatus(event);
   if (canonical) return canonical;
   if (/fuori per la consegna|out for delivery/i.test(value)) return 'In consegna';
-  if (/\b(?:partit[oa]|departed)\b/i.test(event)) return 'Partito';
   if (/\b(?:arrivat[oa]|arrived)\b/i.test(event)) return 'In transito';
   return null;
 }
@@ -221,9 +221,11 @@ export function parseDsvDomEvidence(evidence = {}) {
   }
   // Il riepilogo DSV usa spesso una fase generica: lo storico datato fornisce
   // il passaggio operativo più preciso senza cambiare la fase generale.
-  if (latestTimeline && ((latestTimeline.status === 'Consegnato al terminal' && headingResults.some((result) => result.status === 'Prenotata'))
-    || (latestTimeline.status === 'Partito' && headingResults.some((result) => result.status === 'In transito')))) {
-    return { ...latestTimeline, phaseStatus: latestTimeline.status === 'Partito' ? 'In transito' : 'Prenotata' };
+  const summaryStatus = headingResults.find((result) => result.status !== 'Da verificare manualmente')?.status
+    || (evidence.activeTexts || []).map(canonicalDsvStatus).find(Boolean);
+  if (latestTimeline && ((latestTimeline.status === 'Consegnato al terminal' && summaryStatus === 'Prenotata')
+    || (latestTimeline.status === 'Partito' && ['Prenotata', 'In transito', 'Centro di distribuzione'].includes(summaryStatus)))) {
+    return { ...latestTimeline, phaseStatus: summaryStatus };
   }
   for (const result of headingResults) {
     if (result.status !== 'Da verificare manualmente') return { ...result, evidence: 'dom-headline', confidence: Math.max(result.confidence, .98) };
@@ -422,7 +424,10 @@ export class DsvBetaClient {
       const candidates = [snapshotResult, domResult].filter(Boolean).sort((a, b) => b.confidence - a.confidence);
       // Un esito di consegna datato prevale su qualsiasi riepilogo di fase precedente.
       // Un riepilogo "Consegnata" resta prioritario: può chiudere un tentativo fallito nello storico.
-      if (deliveryEvent && domResult.statusAt && snapshotResult.status !== 'Consegnata') candidates.unshift(domResult);
+      const preciseTransitEvent = domResult?.evidence === 'timeline'
+        && ['Consegnato al terminal', 'Partito'].includes(domResult.status)
+        && domResult.statusAt && domResult.phaseStatus === snapshotResult.status;
+      if ((deliveryEvent && domResult.statusAt && snapshotResult.status !== 'Consegnata') || preciseTransitEvent) candidates.unshift(domResult);
       const current = candidates[0];
       if (!best || current.confidence > best.confidence) best = current;
       if (current.status !== 'Da verificare manualmente') {
