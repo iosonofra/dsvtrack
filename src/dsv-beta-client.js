@@ -6,7 +6,7 @@ const TRACKING_POLL_TIMEOUT_MS = 18_000;
 const TRACKING_POLL_INTERVAL_MS = 700;
 const FAST_TRACKING_POLL_INTERVALS_MS = [250, 500, 800, 1200];
 const ULTRA_TRACKING_POLL_INTERVALS_MS = [150, 250, 400, 600];
-export const DSV_PARSER_VERSION = 7;
+export const DSV_PARSER_VERSION = 8;
 export const DEFAULT_DSV_TRACKING_URL = 'https://www.dsv.com/mydsv/tracking-public/?refNumber=TRACKINGDAINSERIRE&language_region=it-IT_IT';
 
 export const DSV_SPEED_PROFILES = Object.freeze({
@@ -46,10 +46,12 @@ function findRef(snapshot, expression) {
 }
 
 const DSV_STATUS_RULES = [
+  { status: 'Consegnato al terminal', expression: /\b(?:consegnat[oa]\s+al\s+terminal(?:\s+dal\s+mittente)?|delivered\s+to\s+(?:the\s+)?sender\s+terminal)\b/i },
   { status: 'Consegnata', expression: /\b(?:consegnat[ao]|delivered)\b/i },
   { status: 'In consegna', expression: /\b(?:in consegna|out for delivery)\b/i },
   { status: 'Centro di distribuzione', expression: /\b(?:(?:presso (?:il )?)?centro di distribuzione|distribution cent(?:er|re))\b/i },
   { status: 'In transito', expression: /\b(?:in transito|in transit)\b/i },
+  { status: 'Partito', expression: /\b(?:partit[oa]|departed)\b/i },
   { status: 'Prenotata', expression: /\b(?:prenotat[ao]|booked)\b/i },
 ];
 
@@ -95,6 +97,10 @@ export function parseDsvStatusSnapshot(snapshot) {
   }
 
   const statusesFound = new Set(DSV_STATUS_RULES.filter((rule) => rule.expression.test(raw)).map((rule) => rule.status));
+  if (statusesFound.has('Consegnato al terminal')) {
+    const withoutTerminalEvent = raw.replace(/\b(?:consegnat[oa]\s+al\s+terminal(?:\s+dal\s+mittente)?|delivered\s+to\s+(?:the\s+)?sender\s+terminal)\b/gi, '');
+    if (!/\b(?:consegnat[ao]|delivered)\b/i.test(withoutTerminalEvent)) statusesFound.delete('Consegnata');
+  }
   if (/\bnon consegnat[oa]\b/i.test(raw)) statusesFound.delete('Consegnata');
   if (statusesFound.size === 1) return statusResult([...statusesFound][0], 'Unico stato riconoscibile nella pagina pubblica DSV.', { evidence: 'unique-text', confidence: .72, reasonCode: 'STATUS_INFERRED', rawStatus: [...statusesFound][0] });
   return statusResult('Da verificare manualmente', text ? 'La pagina non espone ancora uno stato corrente riconoscibile.' : 'Nessun contenuto leggibile restituito dalla pagina.', { evidence: 'none', confidence: 0, reasonCode: text ? 'STATUS_NOT_READY' : 'EMPTY_PAGE' });
@@ -147,7 +153,7 @@ export function timelineRowStatus(row) {
   const event = String(row?.event || '');
   const reason = String(row?.reason || '');
   const value = `${event} ${reason}`;
-  if (/terminal dal mittente|sender terminal/i.test(value)) return 'Prenotata';
+  if (/consegnat[oa]\s+al\s+terminal|terminal dal mittente|sender terminal/i.test(value)) return 'Consegnato al terminal';
   if (/\b(?:consegnat[oa]|delivered)\b/i.test(event) && !/\b(?:non consegnat[oa]|not delivered)\b/i.test(event)) return 'Consegnata';
   if (/\b(?:non consegnat[oa]|failed delivery|delivery failed)\b/i.test(event)) {
     if (/\b(?:restituit[oa] al mittente|reso al mittente|return(?:ed)? to sender)\b/i.test(reason)) return 'Reso al mittente';
@@ -167,7 +173,8 @@ export function timelineRowStatus(row) {
   const canonical = canonicalDsvStatus(event);
   if (canonical) return canonical;
   if (/fuori per la consegna|out for delivery/i.test(value)) return 'In consegna';
-  if (/\b(?:partit|arrivat|departed|arrived)\b/i.test(value)) return 'In transito';
+  if (/\b(?:partit[oa]|departed)\b/i.test(event)) return 'Partito';
+  if (/\b(?:arrivat[oa]|arrived)\b/i.test(event)) return 'In transito';
   return null;
 }
 
@@ -211,6 +218,12 @@ export function parseDsvDomEvidence(evidence = {}) {
     const phaseStatus = headingResults.find((result) => result.status === 'In consegna')?.status
       || (evidence.activeTexts || []).map(canonicalDsvStatus).find((status) => status === 'In consegna') || '';
     return { ...latestTimeline, phaseStatus };
+  }
+  // Il riepilogo DSV usa spesso una fase generica: lo storico datato fornisce
+  // il passaggio operativo più preciso senza cambiare la fase generale.
+  if (latestTimeline && ((latestTimeline.status === 'Consegnato al terminal' && headingResults.some((result) => result.status === 'Prenotata'))
+    || (latestTimeline.status === 'Partito' && headingResults.some((result) => result.status === 'In transito')))) {
+    return { ...latestTimeline, phaseStatus: latestTimeline.status === 'Partito' ? 'In transito' : 'Prenotata' };
   }
   for (const result of headingResults) {
     if (result.status !== 'Da verificare manualmente') return { ...result, evidence: 'dom-headline', confidence: Math.max(result.confidence, .98) };

@@ -14,7 +14,7 @@ In questo modo:
 #### Opzione A: Dall'host Proxmox VE (Consigliato, nessun accesso SSH necessario)
 1. Carica il file zip sul server Proxmox (o usa la console del nodo):
    ```bash
-   pct push <ID_CONTAINER> dsv-tracking-center-aggiornamento-pulito-2026-09-27.zip /tmp/update.zip
+   pct push <ID_CONTAINER> dsv-tracking-center-aggiornamento-pulito-2026-10-02.zip /tmp/update.zip
    ```
 2. Applica l'aggiornamento e riavvia i servizi:
    ```bash
@@ -61,7 +61,7 @@ In questo modo:
 2. Estrai il file zip in `/opt/dsv-tracking-center`:
    ```bash
    mkdir -p /opt/dsv-tracking-center
-   unzip dsv-tracking-center-aggiornamento-pulito-2026-09-27.zip -d /opt/dsv-tracking-center
+   unzip dsv-tracking-center-aggiornamento-pulito-2026-10-02.zip -d /opt/dsv-tracking-center
    cd /opt/dsv-tracking-center
    ```
 3. Avvia lo script di setup automatico:

@@ -11,4 +11,3 @@ uploads/
 *.bak
 *.zip
 export.xlsx
-scripts/create-update-zip.py

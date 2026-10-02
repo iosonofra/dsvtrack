@@ -44,6 +44,8 @@ function addEvent(record, type, label, detail = '') {
 
 export function normalizeStoredDsvStatus(value) {
   const normalized = String(value || '').trim().toLocaleLowerCase('it-IT');
+  if (/^consegnat[oa] al terminal(?: dal mittente)?$/.test(normalized)) return 'Consegnato al terminal';
+  if (/^partit[oa]$|^departed$/.test(normalized)) return 'Partito';
   if (/^consegnat[oa]$|^delivered$/.test(normalized)) return 'Consegnata';
   if (/^in consegna$|^out for delivery$/.test(normalized)) return 'In consegna';
   if (/centro di distribuzione|distribution cent(?:er|re)/.test(normalized)) return 'Centro di distribuzione';
@@ -55,6 +57,7 @@ export function normalizeStoredDsvStatus(value) {
 export function operationalStatus(record) {
   const value = normalizeStoredDsvStatus(record.dsvStatus).toLocaleLowerCase('it-IT');
   if (DSV_DELIVERY_EVENT_STATUSES.some((status) => status.toLocaleLowerCase('it-IT') === value)) return 'Da gestire';
+  if (value === 'consegnato al terminal' || value === 'partito') return 'In transito';
   if (/consegnat|delivered/.test(value)) return 'Consegnata';
   if (/in consegna|out for delivery/.test(value)) return 'In consegna';
   if (/centro di distribuzione/.test(value)) return 'Centro di distribuzione';
@@ -469,7 +472,7 @@ export async function getImportBatches() {
       if (!rec) continue;
       const status = normalizeStoredDsvStatus(rec.dsvStatus);
       if (status === 'Consegnata') consegnate++;
-      else if (['In transito', 'In consegna', 'Centro di distribuzione'].includes(status)) inTransito++;
+      else if (['Consegnato al terminal', 'Partito', 'In transito', 'In consegna', 'Centro di distribuzione'].includes(status)) inTransito++;
       else if (DSV_DELIVERY_EVENT_STATUSES.includes(status) || rec.operationalStatus === 'Da gestire') eccezioni++;
       else altre++;
     }

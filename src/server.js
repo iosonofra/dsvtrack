@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import express from 'express';
 import multer from 'multer';
 import { readDsvWorkbook } from './excel-import.js';
+import { canApplyVerifiedImportRow } from './import-eligibility.js';
 import { PrestaShopClient } from './prestashop-client.js';
 import { exportSettingsData, loadSettings, normalizeCronSettings, normalizeDsvStateMappings, normalizeNotificationSettings, restoreSettingsData, saveSettings } from './settings-store.js';
 import { DEFAULT_DSV_TRACKING_URL, DSV_DELIVERY_EVENT_STATUSES, DSV_PARSER_VERSION, DSV_SPEED_PROFILES, DsvBetaClient, normalizeBetaSettings } from './dsv-beta-client.js';
@@ -1070,12 +1071,14 @@ app.get('/api/import/verification-jobs/:jobId', (req, res) => {
 app.post('/api/import/apply', async (req, res) => {
   try {
     const { verificationId, carrierId, stateId, selectedSourceRows, updateTracking, updateState } = req.body ?? {};
+    const overwriteTracking = req.body?.overwriteTracking === true;
     const verified = verifiedImports.get(verificationId);
     if (!verified || verified.expiresAt < Date.now()) throw new Error('La verifica è scaduta. Eseguila nuovamente prima di importare.');
     const selectedRows = new Set((selectedSourceRows ?? []).map(Number));
-    const rows = verified.rows.filter((row) => row.canApply && selectedRows.has(Number(row.sourceRow)));
+    const rows = verified.rows.filter((row) => canApplyVerifiedImportRow(row, { updateState, updateTracking, overwriteTracking }) && selectedRows.has(Number(row.sourceRow)));
     if (!rows.length) throw new Error('Seleziona almeno una riga pronta per aggiornamento.');
     if (!updateTracking && !updateState) throw new Error('Scegli almeno un aggiornamento: tracking/corriere o stato ordine.');
+    if (overwriteTracking && !updateTracking) throw new Error('La sovrascrittura richiede l’aggiornamento del tracking.');
     if (updateTracking && !carrierId) throw new Error('Seleziona un corriere per aggiornare tracking e corriere.');
     if (updateState && !stateId) throw new Error('Seleziona uno stato ordine da applicare.');
     const shop = client();
@@ -1083,7 +1086,7 @@ app.post('/api/import/apply', async (req, res) => {
     for (const row of rows) {
       if (!row.canApply) { results.push({ ...row, result: 'Saltata', detail: row.verification || row.validation || 'Non verificata' }); continue; }
       try {
-        const outcome = await shop.applyOrderUpdate({ orderId: row.orderId, trackingNumber: row.trackingNumber, carrierId, stateId, updateTracking, updateState });
+        const outcome = await shop.applyOrderUpdate({ orderId: row.orderId, trackingNumber: row.trackingNumber, carrierId, stateId, updateTracking, updateState, overwriteTracking, expectedExistingTracking: row.existingTracking });
         const detail = outcome.trackingSkipped
           ? `Ordine ${row.orderId}: tracking già presente, aggiornato solo lo stato`
           : outcome.recoveredAfterError
@@ -1169,7 +1172,7 @@ function dsvBetaJobSafeguards(beta, job) {
 function dsvCacheTtl(result) {
   if (!result || result.parserVersion !== DSV_PARSER_VERSION) return 0;
   if (result.status === 'Consegnata') return DSV_BETA_CACHE_TTL_MS;
-  if (['Prenotata', 'In transito', 'Centro di distribuzione', 'In consegna'].includes(result.status)) return DSV_MOVING_CACHE_TTL_MS;
+  if (['Prenotata', 'Consegnato al terminal', 'Partito', 'In transito', 'Centro di distribuzione', 'In consegna'].includes(result.status)) return DSV_MOVING_CACHE_TTL_MS;
   if (result.status === 'Spedizione non trovata') return DSV_NOT_FOUND_CACHE_TTL_MS;
   return 0;
 }
@@ -1202,15 +1205,17 @@ function scheduleDsvBetaJob(job, trackingNumbers) {
 
 function prepareApply(payload) {
   const { verificationId, carrierId, stateId, selectedSourceRows, updateTracking, updateState } = payload;
+  const overwriteTracking = payload.overwriteTracking === true;
   const verified = verifiedImports.get(verificationId);
   if (!verified || verified.expiresAt < Date.now()) throw new Error('La verifica è scaduta. Eseguila nuovamente prima di importare.');
   const selectedRows = new Set((selectedSourceRows ?? []).map(Number));
-  const rows = verified.rows.filter((row) => row.canApply && selectedRows.has(Number(row.sourceRow)));
+  const rows = verified.rows.filter((row) => canApplyVerifiedImportRow(row, { updateState, updateTracking, overwriteTracking }) && selectedRows.has(Number(row.sourceRow)));
   if (!rows.length) throw new Error('Seleziona almeno una riga pronta per aggiornamento.');
   if (!updateTracking && !updateState) throw new Error('Scegli almeno un aggiornamento: tracking/corriere o stato ordine.');
+  if (overwriteTracking && !updateTracking) throw new Error('La sovrascrittura richiede l’aggiornamento del tracking.');
   if (updateTracking && !carrierId) throw new Error('Seleziona un corriere per aggiornare tracking e corriere.');
   if (updateState && !stateId) throw new Error('Seleziona uno stato ordine da applicare.');
-  return { verified, verificationId, carrierId, stateId, updateTracking: Boolean(updateTracking), updateState: Boolean(updateState), rows };
+  return { verified, verificationId, carrierId, stateId, updateTracking: Boolean(updateTracking), updateState: Boolean(updateState), overwriteTracking: Boolean(overwriteTracking), rows };
 }
 
 async function runApplyJob(job, prepared) {
@@ -1219,7 +1224,7 @@ async function runApplyJob(job, prepared) {
     const results = [];
     for (const [index, row] of prepared.rows.entries()) {
       try {
-        const outcome = await shop.applyOrderUpdate({ orderId: row.orderId, trackingNumber: row.trackingNumber, carrierId: prepared.carrierId, stateId: prepared.stateId, updateTracking: prepared.updateTracking, updateState: prepared.updateState });
+        const outcome = await shop.applyOrderUpdate({ orderId: row.orderId, trackingNumber: row.trackingNumber, carrierId: prepared.carrierId, stateId: prepared.stateId, updateTracking: prepared.updateTracking, updateState: prepared.updateState, overwriteTracking: prepared.overwriteTracking, expectedExistingTracking: row.existingTracking });
         const detail = outcome.trackingSkipped
           ? `Ordine ${row.orderId}: tracking già presente, aggiornato solo lo stato`
           : outcome.recoveredAfterError

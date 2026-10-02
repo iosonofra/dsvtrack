@@ -201,7 +201,7 @@ export class PrestaShopClient {
     return { status: 'Pronta per aggiornamento', orderId: orders[0].id };
   }
 
-  async applyOrderUpdate({ orderId, trackingNumber, carrierId, stateId, updateTracking, updateState }) {
+  async applyOrderUpdate({ orderId, trackingNumber, carrierId, stateId, updateTracking, updateState, overwriteTracking = false, expectedExistingTracking = '' }) {
     let trackingSkipped = false;
     let carrierUpdateOutcome = null;
     if (updateTracking) {
@@ -212,8 +212,13 @@ export class PrestaShopClient {
       const requestedTracking = String(trackingNumber ?? '').trim();
       const carrierAlreadyAligned = String(shipment.id_carrier ?? '').trim() === String(carrierId ?? '').trim();
       if (existingTracking && existingTracking !== requestedTracking) {
-        if (!updateState) throw new Error(`Tracking già presente (${shipment.tracking_number}): riga saltata.`);
-        trackingSkipped = true;
+        if (overwriteTracking) {
+          if (existingTracking !== String(expectedExistingTracking ?? '').trim()) throw new Error(`Il tracking dell’ordine è cambiato dopo la verifica (${existingTracking}). Riesegui la verifica prima di sovrascrivere.`);
+          carrierUpdateOutcome = await this.applyOrderCarrierOnly({ orderId, trackingNumber, carrierId, overwrite: true, shipment });
+        } else {
+          if (!updateState) throw new Error(`Tracking già presente (${shipment.tracking_number}): riga saltata.`);
+          trackingSkipped = true;
+        }
       } else if (existingTracking && carrierAlreadyAligned) {
         trackingSkipped = true;
       } else {
