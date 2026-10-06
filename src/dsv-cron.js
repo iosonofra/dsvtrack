@@ -1,5 +1,14 @@
 import { normalizeStoredDsvStatus } from './shipment-store.js';
 import { DSV_DELIVERY_EVENT_STATUSES, normalizeDsvSpeedProfile } from './dsv-beta-client.js';
+import {
+  getNextCronOccurrence,
+  getNextCronOccurrences,
+  describeCronExpression,
+} from './cron-scheduler.js';
+import {
+  DEFAULT_STATE_PRIORITIES,
+  DEFAULT_TIER_INTERVALS,
+} from './settings-store.js';
 
 export function isWithinActiveHours(config = {}, date = new Date()) {
   if (!config.nightPause) return true;
@@ -15,34 +24,85 @@ export function isWithinActiveHours(config = {}, date = new Date()) {
 
 export function selectCronCandidates(shipments = {}, options = {}) {
   const records = Array.isArray(shipments) ? shipments : Object.values(shipments || {});
-  const minIntervalMs = (Number(options.minCheckIntervalHours) || 2) * 3_600_000;
   const batchSize = Math.max(1, Number(options.batchSize) || 25);
   const now = Date.now();
 
-  const candidates = records.filter((record) => {
-    if (!record || !record.trackingNumber) return false;
-    if (record.archived) return false;
+  const statePriorities = options.statePriorities;
+  const tierMinIntervalHours = options.tierMinIntervalHours;
+  const defaultIntervalMs = (Number(options.minCheckIntervalHours) || 2) * 3_600_000;
+
+  // Se statePriorities non è specificato, manteniamo il comportamento legacy retrocompatibile
+  if (!statePriorities) {
+    const candidates = records.filter((record) => {
+      if (!record || !record.trackingNumber) return false;
+      if (record.archived) return false;
+      const status = normalizeStoredDsvStatus(record.dsvStatus);
+      if (status === 'Consegnata') return false;
+
+      // Se controllata di recente, salta per evitare richieste ridondanti (salvo forza manuale)
+      if (!options.force && record.dsvCheckedAt) {
+        const checkedTime = new Date(record.dsvCheckedAt).getTime();
+        if (!Number.isNaN(checkedTime) && (now - checkedTime) < defaultIntervalMs) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+    // Ordina: prima le spedizioni mai controllate, poi quelle controllate più tempo fa
+    candidates.sort((a, b) => {
+      const timeA = a.dsvCheckedAt ? new Date(a.dsvCheckedAt).getTime() : 0;
+      const timeB = b.dsvCheckedAt ? new Date(b.dsvCheckedAt).getTime() : 0;
+      return timeA - timeB;
+    });
+
+    return candidates.slice(0, batchSize);
+  }
+
+  // Algoritmo avanzato con fasce di priorità e frequenze differenziate
+  const validCandidates = [];
+  for (const record of records) {
+    if (!record || !record.trackingNumber) continue;
+    if (record.archived) continue;
+
     const status = normalizeStoredDsvStatus(record.dsvStatus);
-    if (status === 'Consegnata') return false;
+    const tier = statePriorities[status] || (status === 'Consegnata' ? 'excluded' : 'medium');
+
+    // Scarta gli stati esclusi
+    if (tier === 'excluded') continue;
+
+    // Calcola l'intervallo minimo di ri-controllo per la fascia (in ore)
+    const tierHours = tierMinIntervalHours?.[tier] !== undefined
+      ? Number(tierMinIntervalHours[tier])
+      : (Number(options.minCheckIntervalHours) || 2);
+    const minIntervalMs = tierHours * 3_600_000;
 
     // Se controllata di recente, salta per evitare richieste ridondanti (salvo forza manuale)
     if (!options.force && record.dsvCheckedAt) {
       const checkedTime = new Date(record.dsvCheckedAt).getTime();
       if (!Number.isNaN(checkedTime) && (now - checkedTime) < minIntervalMs) {
-        return false;
+        continue;
       }
     }
-    return true;
+
+    validCandidates.push({
+      record,
+      tier,
+      tierRank: tier === 'high' ? 1 : tier === 'medium' ? 2 : 3,
+      checkedTime: record.dsvCheckedAt ? new Date(record.dsvCheckedAt).getTime() : 0,
+    });
+  }
+
+  // Ordina per rango di fascia (high: 1, medium: 2, low: 3)
+  // E all'interno della stessa fascia, chi aspetta da più tempo (checkedTime crescente)
+  validCandidates.sort((a, b) => {
+    if (a.tierRank !== b.tierRank) {
+      return a.tierRank - b.tierRank;
+    }
+    return a.checkedTime - b.checkedTime;
   });
 
-  // Ordina: prima le spedizioni mai controllate, poi quelle controllate più tempo fa
-  candidates.sort((a, b) => {
-    const timeA = a.dsvCheckedAt ? new Date(a.dsvCheckedAt).getTime() : 0;
-    const timeB = b.dsvCheckedAt ? new Date(b.dsvCheckedAt).getTime() : 0;
-    return timeA - timeB;
-  });
-
-  return candidates.slice(0, batchSize);
+  return validCandidates.slice(0, batchSize).map((item) => item.record);
 }
 
 export class DsvCronService {
@@ -88,21 +148,55 @@ export class DsvCronService {
       this.nextRunAt = null;
       return;
     }
-    const intervalMs = Math.max(15, Number(config.intervalMinutes) || 60) * 60_000;
-    this.nextRunAt = new Date(Date.now() + intervalMs).toISOString();
+    this.scheduleNextRun();
+  }
 
-    this.timer = setInterval(() => {
-      this.triggerScan({ manual: false }).catch((error) => {
+  scheduleNextRun() {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    const settings = this.getSettings();
+    const config = settings?.cron;
+    if (!config?.enabled) {
+      this.nextRunAt = null;
+      return;
+    }
+
+    let delayMs = 60_000;
+    if (config.scheduleMode === 'cron') {
+      try {
+        const nextDate = getNextCronOccurrence(config.cronExpression, new Date(), config.timeZone || 'Europe/Rome');
+        this.nextRunAt = nextDate.toISOString();
+        delayMs = Math.max(1000, nextDate.getTime() - Date.now());
+      } catch (err) {
+        this.logger.error('[DSV-CRON] Errore calcolo prossima esecuzione cron:', err.message);
+        delayMs = 60 * 60_000;
+        this.nextRunAt = new Date(Date.now() + delayMs).toISOString();
+      }
+    } else {
+      const intervalMs = Math.max(15, Number(config.intervalMinutes) || 60) * 60_000;
+      this.nextRunAt = new Date(Date.now() + intervalMs).toISOString();
+      delayMs = intervalMs;
+    }
+
+    this.timer = setTimeout(async () => {
+      try {
+        await this.triggerScan({ manual: false });
+      } catch (error) {
         this.logger.error('[DSV-CRON] Errore durante il ciclo automatico:', error.message);
-      });
-    }, intervalMs);
+      } finally {
+        this.scheduleNextRun();
+      }
+    }, delayMs);
 
-    this.logger.log(`[DSV-CRON] Servizio avviato: controllo ogni ${config.intervalMinutes}m. Prossimo avvio: ${this.nextRunAt}`);
+    const modeLabel = config.scheduleMode === 'cron' ? `Cron (${config.cronExpression})` : `ogni ${config.intervalMinutes}m`;
+    this.logger.log(`[DSV-CRON] Servizio avviato [${modeLabel}]. Prossimo avvio: ${this.nextRunAt}`);
   }
 
   stop() {
     if (this.timer) {
-      clearInterval(this.timer);
+      clearTimeout(this.timer);
       this.timer = null;
     }
   }
@@ -128,18 +222,38 @@ export class DsvCronService {
     const config = settings?.cron || {};
     const withinHours = isWithinActiveHours(config);
 
+    let nextRuns = [];
+    let cronDescription = '';
+    if (config.scheduleMode === 'cron' && config.cronExpression) {
+      try {
+        nextRuns = getNextCronOccurrences(config.cronExpression, 5, new Date(), config.timeZone || 'Europe/Rome')
+          .map((d) => d.toISOString());
+        cronDescription = describeCronExpression(config.cronExpression);
+      } catch {
+        // Nessun errore bloccante se l'espressione è in fase di modifica
+      }
+    }
+
     return {
       enabled: Boolean(config.enabled),
+      scheduleMode: config.scheduleMode === 'cron' ? 'cron' : 'interval',
       intervalMinutes: Number(config.intervalMinutes) || 60,
+      cronExpression: config.cronExpression || '0 8,13,18 * * 1-5',
+      cronPreset: config.cronPreset || '',
+      cronDescription,
+      timeZone: config.timeZone || 'Europe/Rome',
+      statePriorities: config.statePriorities || DEFAULT_STATE_PRIORITIES,
+      tierMinIntervalHours: config.tierMinIntervalHours || DEFAULT_TIER_INTERVALS,
       nightPause: Boolean(config.nightPause),
       startHour: Number(config.startHour ?? 8),
       endHour: Number(config.endHour ?? 20),
       batchSize: Number(config.batchSize) || 25,
       minCheckIntervalHours: Number(config.minCheckIntervalHours) || 2,
       isRunning: this.isRunning,
-      isNightPaused: Boolean(config.enabled && config.nightPause && !withinHours),
+      isNightPaused: Boolean(config.enabled && config.scheduleMode === 'interval' && config.nightPause && !withinHours),
       lastRunAt: this.lastRunAt,
       nextRunAt: this.timer ? this.nextRunAt : null,
+      nextRuns,
       lastRunSummary: this.lastRunSummary,
       activeProgress: this.activeProgress,
     };
@@ -162,10 +276,10 @@ export class DsvCronService {
     const config = settings?.cron || {};
     const dsvBetaConfig = settings?.dsvBeta;
 
-    // Se non manuale, verifica se abilitato e nella fascia oraria
+    // Se non manuale, verifica se abilitato e nella fascia oraria (per modalità interval)
     if (!manual) {
       if (!config.enabled) return;
-      if (!isWithinActiveHours(config)) {
+      if (config.scheduleMode !== 'cron' && !isWithinActiveHours(config)) {
         this.lastRunSummary = {
           at: new Date().toISOString(),
           type: 'skipped',

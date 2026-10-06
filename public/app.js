@@ -1622,30 +1622,190 @@ async function loadCronStatus() {
   }
 }
 
+const CRON_DEFAULT_STATE_PRIORITIES = {
+  'In consegna': 'high',
+  'Tentativo non riuscito': 'high',
+  'Consegna riprogrammata': 'high',
+  'Consegna rifiutata': 'high',
+  'In attesa del destinatario': 'high',
+  'Ritardo operativo': 'high',
+  'Reso al mittente': 'high',
+  'Non verificato': 'medium',
+  'In transito': 'medium',
+  'Centro di distribuzione': 'medium',
+  'Prenotata': 'low',
+  'Spedizione non trovata': 'low',
+  'Errore beta': 'low',
+  'Da verificare manualmente': 'low',
+  'Consegnata': 'excluded',
+};
+
+const CRON_DEFAULT_TIER_INTERVALS = {
+  high: 1,
+  medium: 4,
+  low: 8,
+};
+
+const CRON_ALL_STATUSES = [
+  'In consegna',
+  'Tentativo non riuscito',
+  'Consegna riprogrammata',
+  'Consegna rifiutata',
+  'In attesa del destinatario',
+  'Ritardo operativo',
+  'Reso al mittente',
+  'Non verificato',
+  'In transito',
+  'Centro di distribuzione',
+  'Prenotata',
+  'Spedizione non trovata',
+  'Errore beta',
+  'Da verificare manualmente',
+  'Consegnata',
+];
+
+let activeCronStatePriorities = { ...CRON_DEFAULT_STATE_PRIORITIES };
+let activeCronTierIntervals = { ...CRON_DEFAULT_TIER_INTERVALS };
+
+function renderCronPriorityMatrix() {
+  const containers = {
+    high: $('#cron-tier-badges-high'),
+    medium: $('#cron-tier-badges-medium'),
+    low: $('#cron-tier-badges-low'),
+    excluded: $('#cron-tier-badges-excluded'),
+  };
+
+  Object.values(containers).forEach((el) => {
+    if (el) el.innerHTML = '';
+  });
+
+  const tierCycle = { high: 'medium', medium: 'low', low: 'excluded', excluded: 'high' };
+  const tierLabels = { high: 'Alta', medium: 'Media', low: 'Bassa', excluded: 'Esclusa' };
+
+  CRON_ALL_STATUSES.forEach((status) => {
+    const tier = activeCronStatePriorities[status] || (status === 'Consegnata' ? 'excluded' : 'medium');
+    const container = containers[tier];
+    if (!container) return;
+
+    const badge = document.createElement('button');
+    badge.type = 'button';
+    badge.className = `cron-tier-badge ${tier}`;
+    badge.dataset.status = status;
+    badge.dataset.tier = tier;
+    badge.title = `Stato: ${status} (Fascia attuale: ${tierLabels[tier]}). Clicca per spostare in fascia ${tierLabels[tierCycle[tier]]}.`;
+    badge.innerHTML = `<span>${escapeHtml(status)}</span><span class="badge-tier-indicator" aria-hidden="true">→</span>`;
+
+    badge.addEventListener('click', () => {
+      const nextTier = tierCycle[tier];
+      activeCronStatePriorities[status] = nextTier;
+      renderCronPriorityMatrix();
+      updateCronImpactPreview();
+    });
+
+    container.appendChild(badge);
+  });
+}
+
+async function fetchCronPreview(expr) {
+  if (!expr) return;
+  try {
+    const res = await request(`/api/cron/preview?expression=${encodeURIComponent(expr)}&timeZone=Europe/Rome`);
+    const descEl = $('#cron-expression-desc');
+    const listEl = $('#cron-next-runs-list');
+    if (descEl) {
+      descEl.textContent = res.description || 'Espressione valida';
+      descEl.className = 'cron-expr-desc valid';
+    }
+    if (listEl && Array.isArray(res.nextRuns)) {
+      listEl.innerHTML = res.nextRuns.map((iso) => `<li>${displayDateTime(iso)}</li>`).join('');
+    }
+  } catch (err) {
+    const descEl = $('#cron-expression-desc');
+    const listEl = $('#cron-next-runs-list');
+    if (descEl) {
+      descEl.textContent = `Sintassi non valida: ${err.message}`;
+      descEl.className = 'cron-expr-desc invalid';
+    }
+    if (listEl) {
+      listEl.innerHTML = '<li class="error">Nessuna esecuzione calcolabile con questa espressione</li>';
+    }
+  }
+}
+
 function renderCronStatus(status) {
   if (!status) return;
 
   const enabledInput = $('#cron-enabled');
   const intervalSelect = $('#cron-interval');
   const batchSizeInput = $('#cron-batch-size');
-  const minCheckIntervalSelect = $('#cron-min-check-interval');
   const nightPauseCheckbox = $('#cron-night-pause');
   const startHourInput = $('#cron-start-hour');
   const endHourInput = $('#cron-end-hour');
   const hoursRow = $('#cron-hours-row');
+  const scheduleModeInput = $('#cron-schedule-mode');
+  const cronExprInput = $('#cron-expression');
+  const intervalHigh = $('#cron-interval-high');
+  const intervalMedium = $('#cron-interval-medium');
+  const intervalLow = $('#cron-interval-low');
 
   const activeEl = document.activeElement;
-  const isEditingForm = [enabledInput, intervalSelect, batchSizeInput, minCheckIntervalSelect, nightPauseCheckbox, startHourInput, endHourInput].includes(activeEl);
+  const isEditingForm = [
+    enabledInput, intervalSelect, batchSizeInput, nightPauseCheckbox,
+    startHourInput, endHourInput, cronExprInput, intervalHigh, intervalMedium, intervalLow,
+  ].includes(activeEl);
 
   if (!isEditingForm) {
     if (enabledInput) enabledInput.checked = Boolean(status.enabled);
     if (intervalSelect) intervalSelect.value = String(status.intervalMinutes || 60);
     if (batchSizeInput) batchSizeInput.value = String(status.batchSize || 25);
-    if (minCheckIntervalSelect) minCheckIntervalSelect.value = String(status.minCheckIntervalHours || 2);
     if (nightPauseCheckbox) nightPauseCheckbox.checked = Boolean(status.nightPause);
     if (startHourInput) startHourInput.value = String(status.startHour ?? 8);
     if (endHourInput) endHourInput.value = String(status.endHour ?? 20);
     if (hoursRow) hoursRow.style.opacity = status.nightPause ? '1' : '0.4';
+
+    const currentMode = status.scheduleMode === 'cron' ? 'cron' : 'interval';
+    if (scheduleModeInput) scheduleModeInput.value = currentMode;
+
+    const btnInterval = $('#btn-mode-interval');
+    const btnCron = $('#btn-mode-cron');
+    const panelInterval = $('#cron-interval-panel');
+    const panelCron = $('#cron-cron-panel');
+
+    if (btnInterval && btnCron) {
+      btnInterval.classList.toggle('active', currentMode === 'interval');
+      btnCron.classList.toggle('active', currentMode === 'cron');
+    }
+    if (panelInterval && panelCron) {
+      panelInterval.hidden = currentMode !== 'interval';
+      panelCron.hidden = currentMode !== 'cron';
+    }
+
+    if (cronExprInput && status.cronExpression) {
+      cronExprInput.value = status.cronExpression;
+    }
+
+    const descEl = $('#cron-expression-desc');
+    if (descEl && status.cronDescription) {
+      descEl.textContent = status.cronDescription;
+      descEl.className = 'cron-expr-desc valid';
+    }
+
+    const listEl = $('#cron-next-runs-list');
+    if (listEl && Array.isArray(status.nextRuns) && status.nextRuns.length) {
+      listEl.innerHTML = status.nextRuns.map((iso) => `<li>${displayDateTime(iso)}</li>`).join('');
+    }
+
+    if (status.tierMinIntervalHours) {
+      activeCronTierIntervals = { ...status.tierMinIntervalHours };
+      if (intervalHigh) intervalHigh.value = String(status.tierMinIntervalHours.high ?? 1);
+      if (intervalMedium) intervalMedium.value = String(status.tierMinIntervalHours.medium ?? 4);
+      if (intervalLow) intervalLow.value = String(status.tierMinIntervalHours.low ?? 8);
+    }
+
+    if (status.statePriorities) {
+      activeCronStatePriorities = { ...status.statePriorities };
+      renderCronPriorityMatrix();
+    }
   }
 
   const headerBadge = $('#cron-badge-status');
@@ -1667,7 +1827,8 @@ function renderCronStatus(status) {
       headerBadge.style.background = '';
       headerBadge.style.color = '';
       headerBadge.style.borderColor = '';
-      headerBadge.textContent = `Pianificato · ogni ${status.intervalMinutes} min`;
+      const modeLabel = status.scheduleMode === 'cron' ? 'Cron' : `ogni ${status.intervalMinutes}m`;
+      headerBadge.textContent = `Pianificato · ${modeLabel}`;
     } else {
       headerBadge.className = 'badge';
       headerBadge.style.background = '';
@@ -1792,6 +1953,74 @@ function setupCronSection() {
   const stopBtn = $('#cron-stop-btn');
   const msg = $('#cron-save-message');
 
+  const btnModeInterval = $('#btn-mode-interval');
+  const btnModeCron = $('#btn-mode-cron');
+  const panelInterval = $('#cron-interval-panel');
+  const panelCron = $('#cron-cron-panel');
+  const modeInput = $('#cron-schedule-mode');
+  const cronExprInput = $('#cron-expression');
+  const validateBtn = $('#cron-validate-btn');
+  const resetPrioritiesBtn = $('#cron-reset-priorities-btn');
+
+  // Modalità switch
+  btnModeInterval?.addEventListener('click', () => {
+    btnModeInterval.classList.add('active');
+    btnModeCron?.classList.remove('active');
+    if (modeInput) modeInput.value = 'interval';
+    if (panelInterval) panelInterval.hidden = false;
+    if (panelCron) panelCron.hidden = true;
+    updateCronImpactPreview();
+  });
+
+  btnModeCron?.addEventListener('click', () => {
+    btnModeCron.classList.add('active');
+    btnModeInterval?.classList.remove('active');
+    if (modeInput) modeInput.value = 'cron';
+    if (panelInterval) panelInterval.hidden = true;
+    if (panelCron) panelCron.hidden = false;
+    if (cronExprInput?.value) fetchCronPreview(cronExprInput.value);
+    updateCronImpactPreview();
+  });
+
+  // Preset chips
+  document.querySelectorAll('.cron-preset-chip').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      const expr = chip.dataset.preset;
+      if (cronExprInput && expr) {
+        cronExprInput.value = expr;
+        fetchCronPreview(expr);
+        updateCronImpactPreview();
+      }
+    });
+  });
+
+  // Validazione manuale o su input debounce
+  validateBtn?.addEventListener('click', () => {
+    if (cronExprInput?.value) fetchCronPreview(cronExprInput.value);
+  });
+
+  cronExprInput?.addEventListener('change', () => {
+    if (cronExprInput?.value) fetchCronPreview(cronExprInput.value);
+  });
+
+  // Reset fasce
+  resetPrioritiesBtn?.addEventListener('click', () => {
+    activeCronStatePriorities = { ...CRON_DEFAULT_STATE_PRIORITIES };
+    activeCronTierIntervals = { ...CRON_DEFAULT_TIER_INTERVALS };
+    const intervalHigh = $('#cron-interval-high');
+    const intervalMedium = $('#cron-interval-medium');
+    const intervalLow = $('#cron-interval-low');
+    if (intervalHigh) intervalHigh.value = '1';
+    if (intervalMedium) intervalMedium.value = '4';
+    if (intervalLow) intervalLow.value = '8';
+    renderCronPriorityMatrix();
+    updateCronImpactPreview();
+    showFloatingToast('Fasce di priorità reimpostate ai valori consigliati', 'info');
+  });
+
+  // Inizializza matrice
+  renderCronPriorityMatrix();
+
   nightPauseCheckbox?.addEventListener('change', () => {
     if (hoursRow) hoursRow.style.opacity = nightPauseCheckbox.checked ? '1' : '0.4';
   });
@@ -1802,14 +2031,22 @@ function setupCronSection() {
     if (saveBtn) saveBtn.disabled = true;
 
     try {
+      const scheduleMode = modeInput?.value || 'interval';
       const payload = {
         enabled: $('#cron-enabled')?.checked,
+        scheduleMode,
         intervalMinutes: Number($('#cron-interval')?.value) || 60,
+        cronExpression: cronExprInput?.value || '0 8,13,18 * * 1-5',
         batchSize: Number($('#cron-batch-size')?.value) || 25,
-        minCheckIntervalHours: Number($('#cron-min-check-interval')?.value) || 2,
         nightPause: $('#cron-night-pause')?.checked,
         startHour: Number($('#cron-start-hour')?.value) || 8,
         endHour: Number($('#cron-end-hour')?.value) || 20,
+        statePriorities: activeCronStatePriorities,
+        tierMinIntervalHours: {
+          high: Number($('#cron-interval-high')?.value) || 1,
+          medium: Number($('#cron-interval-medium')?.value) || 4,
+          low: Number($('#cron-interval-low')?.value) || 8,
+        },
       };
 
       const res = await request('/api/cron/config', {
@@ -2002,13 +2239,25 @@ function updateCronImpactPreview() {
   const preview = $('#cron-impact-preview');
   if (!preview) return;
   const enabled = Boolean($('#cron-enabled')?.checked);
-  const interval = $('#cron-interval')?.selectedOptions?.[0]?.textContent || 'intervallo selezionato';
+  if (!enabled) {
+    preview.innerHTML = '<strong>Automazione disattivata</strong><span>Le verifiche partiranno solo manualmente finché non salvi il servizio come attivo.</span>';
+    return;
+  }
+
+  const mode = $('#cron-schedule-mode')?.value || 'interval';
   const batch = Number($('#cron-batch-size')?.value) || 25;
-  const minInterval = $('#cron-min-check-interval')?.selectedOptions?.[0]?.textContent || '';
-  const nightPause = Boolean($('#cron-night-pause')?.checked);
-  preview.innerHTML = enabled
-    ? `<strong>Impatto previsto</strong><span>${escapeHtml(interval)} · massimo ${batch} spedizioni per ciclo · ${escapeHtml(minInterval.toLocaleLowerCase('it-IT'))}${nightPause ? ' · pausa notturna attiva' : ''}.</span>`
-    : '<strong>Automazione disattivata</strong><span>Le verifiche partiranno solo manualmente finché non salvi il servizio come attivo.</span>';
+  const highCount = Object.values(activeCronStatePriorities).filter((t) => t === 'high').length;
+  const highInterval = $('#cron-interval-high')?.value || '1';
+
+  if (mode === 'cron') {
+    const expr = $('#cron-expression')?.value || '0 8,13,18 * * 1-5';
+    const desc = $('#cron-expression-desc')?.textContent || 'Orari specifici configurati';
+    preview.innerHTML = `<strong>Pianificazione Cron attiva</strong><span>${escapeHtml(expr)} (${escapeHtml(desc)}) · max ${batch} spedizioni per ciclo · ${highCount} stati prioritari (min ${highInterval}h).</span>`;
+  } else {
+    const interval = $('#cron-interval')?.selectedOptions?.[0]?.textContent || 'intervallo selezionato';
+    const nightPause = Boolean($('#cron-night-pause')?.checked);
+    preview.innerHTML = `<strong>Impatto previsto</strong><span>${escapeHtml(interval)} · max ${batch} spedizioni per ciclo · ${highCount} stati prioritari (min ${highInterval}h)${nightPause ? ' · pausa notturna attiva' : ''}.</span>`;
+  }
 }
 
 function updateMappingFilter() {

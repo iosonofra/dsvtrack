@@ -8,6 +8,7 @@ import { PrestaShopClient } from './prestashop-client.js';
 import { exportSettingsData, loadSettings, normalizeCronSettings, normalizeDsvStateMappings, normalizeNotificationSettings, restoreSettingsData, saveSettings } from './settings-store.js';
 import { DEFAULT_DSV_TRACKING_URL, DSV_DELIVERY_EVENT_STATUSES, DSV_PARSER_VERSION, DSV_SPEED_PROFILES, DsvBetaClient, normalizeBetaSettings } from './dsv-beta-client.js';
 import { DsvCronService } from './dsv-cron.js';
+import { CRON_PRESETS, describeCronExpression, getNextCronOccurrences, validateCronExpression } from './cron-scheduler.js';
 import { NotificationService } from './notification-service.js';
 import { archiveShipment, deleteArchivedShipment, deleteImportBatch, exportShipmentsData, getAuditLog, getControlCenter, getExistingShipmentsIndex, getImportBatches, getShipment, linkShipmentToPrestaShopOrder, registerImportBatch, restoreShipmentsData, syncAppliedShipments, syncDsvShipments, syncManualPrestaShopState, syncShipmentPrestaShopShipping, syncVerifiedShipments, updateShipmentCase } from './shipment-store.js';
 
@@ -297,6 +298,32 @@ app.post('/api/dsv-beta/jobs/:jobId/cancel', (req, res) => {
 
 app.get('/api/cron/status', (_req, res) => {
   res.json(cronService.getStatus());
+});
+
+app.get('/api/cron/presets', (_req, res) => {
+  res.json({ presets: CRON_PRESETS });
+});
+
+app.get('/api/cron/preview', (req, res) => {
+  const expr = String(req.query.expression || '').trim();
+  const timeZone = String(req.query.timeZone || 'Europe/Rome').trim();
+  const validation = validateCronExpression(expr);
+  if (!validation.valid) {
+    return res.status(400).json({ valid: false, error: validation.error });
+  }
+
+  try {
+    const nextRuns = getNextCronOccurrences(expr, 5, new Date(), timeZone)
+      .map((d) => d.toISOString());
+    res.json({
+      valid: true,
+      expression: expr,
+      description: validation.description,
+      nextRuns,
+    });
+  } catch (err) {
+    res.status(400).json({ valid: false, error: err.message });
+  }
 });
 
 app.post('/api/cron/config', async (req, res) => {

@@ -52,15 +52,77 @@ export function normalizeNotificationSettings(input = {}) {
   return { telegram, email, triggers };
 }
 
+export const DEFAULT_STATE_PRIORITIES = {
+  'In consegna': 'high',
+  'Tentativo non riuscito': 'high',
+  'Consegna riprogrammata': 'high',
+  'Consegna rifiutata': 'high',
+  'In attesa del destinatario': 'high',
+  'Ritardo operativo': 'high',
+  'Reso al mittente': 'high',
+  'Non verificato': 'medium',
+  'In transito': 'medium',
+  'Centro di distribuzione': 'medium',
+  'Prenotata': 'low',
+  'Spedizione non trovata': 'low',
+  'Errore beta': 'low',
+  'Da verificare manualmente': 'low',
+  'Consegnata': 'excluded',
+};
+
+export const DEFAULT_TIER_INTERVALS = {
+  high: 1,
+  medium: 4,
+  low: 8,
+};
+
 export function normalizeCronSettings(input = {}) {
   const enabled = Boolean(input.enabled);
+  const scheduleMode = input.scheduleMode === 'cron' ? 'cron' : 'interval';
   const intervalMinutes = Math.min(Math.max(Number(input.intervalMinutes) || 60, 15), 1440);
+  const cronExpression = String(input.cronExpression || '0 8,13,18 * * 1-5').trim() || '0 8,13,18 * * 1-5';
+  const cronPreset = String(input.cronPreset || '').trim();
+  const timeZone = String(input.timeZone || 'Europe/Rome').trim() || 'Europe/Rome';
   const nightPause = input.nightPause !== undefined ? Boolean(input.nightPause) : true;
   const startHour = Math.min(Math.max(Number(input.startHour) || 8, 0), 23);
   const endHour = Math.min(Math.max(Number(input.endHour) || 20, 0), 23);
   const batchSize = Math.min(Math.max(Number(input.batchSize) || 25, 1), 100);
   const minCheckIntervalHours = Math.min(Math.max(Number(input.minCheckIntervalHours) || 2, 0.5), 72);
-  return { enabled, intervalMinutes, nightPause, startHour, endHour, batchSize, minCheckIntervalHours };
+
+  // Normalizza priorità stati
+  const allowedTiers = new Set(['high', 'medium', 'low', 'excluded']);
+  const statePriorities = { ...DEFAULT_STATE_PRIORITIES };
+  if (input.statePriorities && typeof input.statePriorities === 'object' && !Array.isArray(input.statePriorities)) {
+    for (const [status, tier] of Object.entries(input.statePriorities)) {
+      if (allowedTiers.has(tier)) {
+        statePriorities[status] = tier;
+      }
+    }
+  }
+
+  // Normalizza intervalli per fascia
+  const rawTierIntervals = input.tierMinIntervalHours && typeof input.tierMinIntervalHours === 'object' ? input.tierMinIntervalHours : {};
+  const tierMinIntervalHours = {
+    high: Math.min(Math.max(Number(rawTierIntervals.high) || DEFAULT_TIER_INTERVALS.high, 0.5), 72),
+    medium: Math.min(Math.max(Number(rawTierIntervals.medium) || DEFAULT_TIER_INTERVALS.medium, 0.5), 72),
+    low: Math.min(Math.max(Number(rawTierIntervals.low) || DEFAULT_TIER_INTERVALS.low, 0.5), 72),
+  };
+
+  return {
+    enabled,
+    scheduleMode,
+    intervalMinutes,
+    cronExpression,
+    cronPreset,
+    timeZone,
+    nightPause,
+    startHour,
+    endHour,
+    batchSize,
+    minCheckIntervalHours,
+    statePriorities,
+    tierMinIntervalHours,
+  };
 }
 
 export async function loadSettings(defaults) {

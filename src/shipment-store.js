@@ -1,7 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DSV_DELIVERY_EVENT_STATUSES, findDsvStatusEvent, normalizeDsvTimeline, parseDsvEventDate } from './dsv-beta-client.js';
+import { DSV_DELIVERY_EVENT_STATUSES, findDsvStatusEvent, normalizeDsvTimeline, parseDsvDomEvidence, parseDsvEventDate } from './dsv-beta-client.js';
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const storePath = join(projectRoot, 'data', 'shipments.json');
@@ -22,6 +22,7 @@ async function load() {
       record.dsvTimeline = normalizedTimeline;
       migrated = true;
     }
+    if (reconcileStoredDeparture(record, normalizedTimeline)) migrated = true;
     const storedDate = parseDsvEventDate(record.dsvStatusDateRaw);
     if (record.dsvStatusAt || storedDate.local) continue;
     const event = findDsvStatusEvent(normalizeStoredDsvStatus(record.dsvStatus), normalizedTimeline);
@@ -52,6 +53,29 @@ export function normalizeStoredDsvStatus(value) {
   if (/^in transito$|^in transit$/.test(normalized)) return 'In transito';
   if (/^prenotat[oa]$|^booked$/.test(normalized)) return 'Prenotata';
   return String(value || '').trim();
+}
+
+// Le vecchie verifiche potevano salvare la fase generica anche quando lo
+// storico acquisito nello stesso controllo terminava con un evento Partito.
+// Non si applica a consegne, eccezioni o fasi più avanzate.
+export function reconcileStoredDeparture(record, timeline = record?.dsvTimeline) {
+  const savedStatus = normalizeStoredDsvStatus(record?.dsvStatus);
+  if (!['Prenotata', 'In transito', 'Centro di distribuzione'].includes(savedStatus)) return false;
+  const latest = parseDsvDomEvidence({ timeline });
+  if (latest?.status !== 'Partito' || !latest.statusAt || latest.statusDatePrecision !== 'datetime') return false;
+  record.dsvStatus = 'Partito';
+  record.dsvPhaseStatus = savedStatus;
+  record.dsvDetail = 'Stato ricavato dall’ultimo evento datato dello storico DSV già acquisito.';
+  record.dsvRawStatus = latest.rawStatus;
+  record.dsvEventReason = latest.eventReason || '';
+  record.dsvEventLocation = latest.eventLocation || '';
+  record.dsvEvidence = 'stored-timeline';
+  record.dsvConfidence = latest.confidence;
+  record.dsvReasonCode = latest.reasonCode;
+  record.dsvStatusAt = latest.statusAt;
+  record.dsvStatusDateRaw = latest.statusDateRaw;
+  record.dsvStatusDatePrecision = latest.statusDatePrecision;
+  return true;
 }
 
 export function operationalStatus(record) {
