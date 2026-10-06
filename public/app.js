@@ -1667,7 +1667,67 @@ const CRON_ALL_STATUSES = [
 let activeCronStatePriorities = { ...CRON_DEFAULT_STATE_PRIORITIES };
 let activeCronTierIntervals = { ...CRON_DEFAULT_TIER_INTERVALS };
 
+let draggedCronStatus = null;
+let cronDragJustFinished = false;
+let cronDragListenersAttached = false;
+
+function initCronDropZones() {
+  if (cronDragListenersAttached) return;
+  const cards = document.querySelectorAll('.cron-tier-card');
+  if (!cards.length) return;
+
+  cards.forEach((card) => {
+    const tier = card.dataset.tier;
+    if (!tier) return;
+
+    card.addEventListener('dragenter', (e) => {
+      e.preventDefault();
+      card.classList.add('drag-over');
+    });
+
+    card.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      if (!card.classList.contains('drag-over')) {
+        card.classList.add('drag-over');
+      }
+    });
+
+    card.addEventListener('dragleave', (e) => {
+      if (!card.contains(e.relatedTarget)) {
+        card.classList.remove('drag-over');
+      }
+    });
+
+    card.addEventListener('drop', (e) => {
+      e.preventDefault();
+      card.classList.remove('drag-over');
+      const status = e.dataTransfer.getData('application/x-dsv-status')
+        || e.dataTransfer.getData('text/plain')
+        || draggedCronStatus;
+      if (!status) return;
+
+      if (activeCronStatePriorities[status] !== tier) {
+        activeCronStatePriorities[status] = tier;
+        renderCronPriorityMatrix();
+        updateCronImpactPreview();
+
+        const allBadges = document.querySelectorAll('.cron-tier-badge');
+        const movedBadge = Array.from(allBadges).find((b) => b.dataset.status === status);
+        if (movedBadge) {
+          movedBadge.classList.add('just-dropped');
+          setTimeout(() => movedBadge.classList.remove('just-dropped'), 360);
+        }
+      }
+    });
+  });
+
+  cronDragListenersAttached = true;
+}
+
 function renderCronPriorityMatrix() {
+  initCronDropZones();
+
   const containers = {
     high: $('#cron-tier-badges-high'),
     medium: $('#cron-tier-badges-medium'),
@@ -1689,13 +1749,41 @@ function renderCronPriorityMatrix() {
 
     const badge = document.createElement('button');
     badge.type = 'button';
+    badge.draggable = true;
     badge.className = `cron-tier-badge ${tier}`;
     badge.dataset.status = status;
     badge.dataset.tier = tier;
-    badge.title = `Stato: ${status} (Fascia attuale: ${tierLabels[tier]}). Clicca per spostare in fascia ${tierLabels[tierCycle[tier]]}.`;
-    badge.innerHTML = `<span>${escapeHtml(status)}</span><span class="badge-tier-indicator" aria-hidden="true">→</span>`;
+    badge.title = `Stato: ${status} (Fascia: ${tierLabels[tier]}). Trascina per cambiare fascia, o clicca per avanzare a ${tierLabels[tierCycle[tier]]}.`;
+    badge.innerHTML = `<span class="badge-drag-grip" aria-hidden="true" title="Trascina">⋮⋮</span><span>${escapeHtml(status)}</span><span class="badge-tier-indicator" aria-hidden="true" title="Clicca per avanzare">→</span>`;
+
+    badge.addEventListener('dragstart', (e) => {
+      draggedCronStatus = status;
+      e.dataTransfer.setData('text/plain', status);
+      e.dataTransfer.setData('application/x-dsv-status', status);
+      e.dataTransfer.effectAllowed = 'move';
+      const grid = $('.cron-tiers-grid');
+      if (grid) grid.classList.add('is-drag-in-progress');
+      requestAnimationFrame(() => {
+        badge.classList.add('is-dragging');
+      });
+    });
+
+    badge.addEventListener('dragend', () => {
+      draggedCronStatus = null;
+      badge.classList.remove('is-dragging');
+      const grid = $('.cron-tiers-grid');
+      if (grid) grid.classList.remove('is-drag-in-progress');
+      document.querySelectorAll('.cron-tier-card, .cron-tier-badges').forEach((el) => {
+        el.classList.remove('drag-over');
+      });
+      cronDragJustFinished = true;
+      setTimeout(() => {
+        cronDragJustFinished = false;
+      }, 120);
+    });
 
     badge.addEventListener('click', () => {
+      if (cronDragJustFinished) return;
       const nextTier = tierCycle[tier];
       activeCronStatePriorities[status] = nextTier;
       renderCronPriorityMatrix();
@@ -1703,6 +1791,16 @@ function renderCronPriorityMatrix() {
     });
 
     container.appendChild(badge);
+  });
+
+  // Mostra un placeholder elegante per le fasce vuote
+  Object.entries(containers).forEach(([tierKey, container]) => {
+    if (container && container.children.length === 0) {
+      const placeholder = document.createElement('div');
+      placeholder.className = 'cron-tier-empty-placeholder';
+      placeholder.textContent = 'Trascina qui uno stato…';
+      container.appendChild(placeholder);
+    }
   });
 }
 
