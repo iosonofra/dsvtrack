@@ -1650,6 +1650,13 @@ const CRON_DEFAULT_TIER_INTERVALS = {
   low: 8,
 };
 
+const CRON_TIER_LABELS = {
+  high: 'Alta',
+  medium: 'Media',
+  low: 'Bassa',
+  excluded: 'Esclusa',
+};
+
 const CRON_ALL_STATUSES = [
   'In consegna',
   'Tentativo non riuscito',
@@ -1748,6 +1755,7 @@ function renderCronPriorityMatrix() {
   });
 
   const tierCycle = { high: 'medium', medium: 'low', low: 'excluded', excluded: 'high' };
+  const tierLabels = { high: 'Alta', medium: 'Media', low: 'Bassa', excluded: 'Esclusa' };
   const allKnownStatuses = Array.from(new Set([
     ...CRON_ALL_STATUSES,
     ...Object.keys(activeCronStatePriorities || {}),

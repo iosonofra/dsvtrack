@@ -831,6 +831,7 @@ main[data-active-view="history"] > .workspace-view {
   grid-row: 1 / -1;
 }
 
+[hidden],
 .workspace-view[hidden] { display: none !important; }
 .card { border: 1px solid var(--line); border-radius: 3px; background: var(--surface); box-shadow: none; }
 
