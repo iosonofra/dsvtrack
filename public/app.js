@@ -1630,6 +1630,9 @@ const CRON_DEFAULT_STATE_PRIORITIES = {
   'In attesa del destinatario': 'high',
   'Ritardo operativo': 'high',
   'Reso al mittente': 'high',
+  'Eccezione DSV': 'high',
+  'Partito': 'medium',
+  'Consegnato al terminal': 'medium',
   'Non verificato': 'medium',
   'In transito': 'medium',
   'Centro di distribuzione': 'medium',
@@ -1637,6 +1640,7 @@ const CRON_DEFAULT_STATE_PRIORITIES = {
   'Spedizione non trovata': 'low',
   'Errore beta': 'low',
   'Da verificare manualmente': 'low',
+  'Intervento manuale richiesto': 'low',
   'Consegnata': 'excluded',
 };
 
@@ -1654,13 +1658,17 @@ const CRON_ALL_STATUSES = [
   'In attesa del destinatario',
   'Ritardo operativo',
   'Reso al mittente',
-  'Non verificato',
+  'Eccezione DSV',
+  'Partito',
+  'Consegnato al terminal',
   'In transito',
   'Centro di distribuzione',
+  'Non verificato',
   'Prenotata',
   'Spedizione non trovata',
   'Errore beta',
   'Da verificare manualmente',
+  'Intervento manuale richiesto',
   'Consegnata',
 ];
 
@@ -1740,9 +1748,19 @@ function renderCronPriorityMatrix() {
   });
 
   const tierCycle = { high: 'medium', medium: 'low', low: 'excluded', excluded: 'high' };
-  const tierLabels = { high: 'Alta', medium: 'Media', low: 'Bassa', excluded: 'Esclusa' };
+  const allKnownStatuses = Array.from(new Set([
+    ...CRON_ALL_STATUSES,
+    ...Object.keys(activeCronStatePriorities || {}),
+  ])).sort((a, b) => {
+    const idxA = CRON_ALL_STATUSES.indexOf(a);
+    const idxB = CRON_ALL_STATUSES.indexOf(b);
+    if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+    if (idxA !== -1) return -1;
+    if (idxB !== -1) return 1;
+    return a.localeCompare(b, 'it');
+  });
 
-  CRON_ALL_STATUSES.forEach((status) => {
+  allKnownStatuses.forEach((status) => {
     const tier = activeCronStatePriorities[status] || (status === 'Consegnata' ? 'excluded' : 'medium');
     const container = containers[tier];
     if (!container) return;
@@ -1901,7 +1919,7 @@ function renderCronStatus(status) {
     }
 
     if (status.statePriorities) {
-      activeCronStatePriorities = { ...status.statePriorities };
+      activeCronStatePriorities = { ...CRON_DEFAULT_STATE_PRIORITIES, ...status.statePriorities };
       renderCronPriorityMatrix();
     }
   }

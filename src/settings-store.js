@@ -60,6 +60,9 @@ export const DEFAULT_STATE_PRIORITIES = {
   'In attesa del destinatario': 'high',
   'Ritardo operativo': 'high',
   'Reso al mittente': 'high',
+  'Eccezione DSV': 'high',
+  'Partito': 'medium',
+  'Consegnato al terminal': 'medium',
   'Non verificato': 'medium',
   'In transito': 'medium',
   'Centro di distribuzione': 'medium',
@@ -67,6 +70,7 @@ export const DEFAULT_STATE_PRIORITIES = {
   'Spedizione non trovata': 'low',
   'Errore beta': 'low',
   'Da verificare manualmente': 'low',
+  'Intervento manuale richiesto': 'low',
   'Consegnata': 'excluded',
 };
 
