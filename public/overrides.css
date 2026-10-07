@@ -736,16 +736,19 @@ input:focus, select:focus, textarea:focus { border-color: var(--dsv-blue); box-s
 .dsv-brand-logo { height: 21px; width: auto; color: #fff; display: block; flex-shrink: 0; }
 .topbar-brand strong { font-size: 1.32rem; font-weight: 700; font-style: italic; letter-spacing: -.09em; transform: skew(-8deg); }
 .topbar-brand span { padding-left: 12px; border-left: 1px solid rgba(255,255,255,.32); font-size: .84rem; font-weight: 600; letter-spacing: .01em; white-space: nowrap; }
-.global-tracking-search { position: relative; display: grid; grid-template-columns: minmax(0,1fr) auto; width: 100%; }
-.global-tracking-search input { min-height: 34px; padding: 7px 38px 7px 35px; border: 1px solid rgba(255,255,255,.45); background: #fff; appearance: none; }
+.global-tracking-search { --global-search-submit-width: 72px; position: relative; display: grid; grid-template-columns: minmax(0,1fr) var(--global-search-submit-width); gap: 0; align-items: center; width: 100%; }
+.global-tracking-search input { min-height: 34px; padding: 7px 38px 7px 35px; border: 1px solid rgba(255,255,255,.45); border-radius: 3px 0 0 3px; background: #fff; appearance: none; }
 .global-tracking-search input::-webkit-search-cancel-button { display: none; }
-.global-tracking-search button.global-search-submit { min-height: 34px; padding: 7px 18px; border: 1px solid #2e6fe5; background: #114fb9; font-size: .78rem; }
+.global-tracking-search button.global-search-submit { min-height: 34px; padding: 7px 12px; border: 1px solid #2e6fe5; border-radius: 0 3px 3px 0; background: #114fb9; font-size: .78rem; }
 .global-search-icon { position: absolute; z-index: 2; top: 50%; left: 11px; display: grid; width: 16px; height: 16px; place-items: center; color: #60738e; transform: translateY(-50%); pointer-events: none; }
 .global-search-icon svg,
 .global-search-clear svg,
 .global-search-open-icon { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
-.global-tracking-search button.global-search-clear { position: absolute; z-index: 3; top: 50%; right: 70px; display: grid; width: 28px; min-height: 28px; padding: 6px; place-items: center; border: 0; background: transparent; color: #60738e; transform: translateY(-50%); }
-.global-tracking-search button.global-search-clear:hover { background: #edf3fb; color: var(--dsv-navy); }
+.global-tracking-search button.global-search-clear { position: absolute; z-index: 3; top: 50%; right: calc(var(--global-search-submit-width) + 7px); display: grid; width: 22px; height: 22px; min-height: 22px; padding: 4px; place-items: center; border: 0; border-radius: 2px; background: transparent; color: #718198; transform: translateY(-50%); }
+.global-tracking-search button.global-search-clear svg { width: 13px; height: 13px; stroke-width: 1.8; }
+.global-tracking-search button.global-search-clear:hover { background: #e6edf7; color: #163b70; }
+.global-tracking-search button.global-search-clear:active { background: #d8e4f3; color: var(--dsv-navy); }
+.global-tracking-search button.global-search-clear:focus-visible { outline: 2px solid #78aaf7; outline-offset: 1px; }
 .global-tracking-search button.global-search-clear[hidden] { display: none; }
 .global-search-results { position: absolute; z-index: 90; top: calc(100% + 7px); left: 0; width: 100%; min-width: 470px; overflow: hidden; border: 1px solid #aebdd1; border-radius: 3px; background: #fff; color: var(--ink); box-shadow: 0 12px 28px rgba(10, 39, 79, .2); }
 .global-search-results[hidden] { display: none; }
@@ -3307,7 +3310,8 @@ main[data-active-view="history"] > .workspace-view {
   .topbar-brand strong { font-size: 1.12rem; }
   .global-tracking-search button { padding-inline: 10px; }
   .global-tracking-search input { padding-right: 34px; font-size: .74rem; }
-  .global-tracking-search button.global-search-clear { right: 54px; }
+  .global-tracking-search { --global-search-submit-width: 58px; }
+  .global-tracking-search button.global-search-clear { right: calc(var(--global-search-submit-width) + 6px); }
   .global-search-results { position: fixed; top: calc(var(--topbar-height) + 6px); right: 8px; left: 8px; width: auto; min-width: 0; max-height: calc(100dvh - var(--topbar-height) - 14px); }
   .global-search-meta { align-items: flex-start; flex-direction: column; gap: 3px; }
   .global-search-list { max-height: calc(100dvh - var(--topbar-height) - 74px); }
