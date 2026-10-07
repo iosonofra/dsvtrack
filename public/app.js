@@ -13,6 +13,12 @@ let controlPage = 1;
 let controlMetricFilter = 'all';
 let controlPrestaStateFilter = '';
 let controlSortDir = 'desc';
+let globalSearchResults = [];
+let globalSearchActiveIndex = -1;
+let globalSearchAbortController = null;
+let globalSearchRequestId = 0;
+let globalSearchSuggestTimer = null;
+let globalSearchFilterTimer = null;
 const PRESTA_UNLINKED_FILTER = '__unlinked__';
 const PRESTA_UNAVAILABLE_FILTER = '__unavailable__';
 const CONTROL_PAGE_SIZE = 50;
@@ -44,7 +50,8 @@ async function request(url, options) {
   let response;
   try {
     response = await fetch(url, options);
-  } catch {
+  } catch (cause) {
+    if (cause?.name === 'AbortError') throw cause;
     const error = new Error('Server temporaneamente non raggiungibile. Riprova tra poco.');
     error.transient = true;
     throw error;
@@ -52,7 +59,8 @@ async function request(url, options) {
   let body;
   try {
     body = await response.text();
-  } catch {
+  } catch (cause) {
+    if (cause?.name === 'AbortError') throw cause;
     const error = new Error('Risposta del server interrotta durante il trasferimento. Riprova tra poco.');
     error.transient = true;
     throw error;
@@ -3066,19 +3074,13 @@ function setupWorkspace() {
     history: '<svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.3-5.7L4 8.6M4 4v4.6h4.6M12 8v5l3 2"/></svg>',
     settings: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19 13.5v-3l-2-.7-.7-1.7.9-1.9-2.1-2.1-1.9.9-1.7-.7-.7-2h-3l-.7 2-1.7.7-1.9-.9-2.1 2.1.9 1.9-.7 1.7-2 .7v3l2 .7.7 1.7-.9 1.9 2.1 2.1 1.9-.9 1.7.7.7 2h3l.7-2 1.7-.7 1.9.9 2.1-2.1-.9-1.9.7-1.7 2-.7Z"/></svg>',
   };
-  document.body.insertAdjacentHTML('afterbegin', `<header class="app-topbar"><button id="mobile-navigation-toggle" class="topbar-icon" type="button" aria-label="Apri navigazione" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button><a class="topbar-brand" href="#control" aria-label="DSV - Tracking Center"><svg class="dsv-brand-logo" viewBox="0 0 81 24" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M 70.537,22.559 C 70.272,23.074 69.493,24 68.14,24 h -5.557 c -1.344,0 -2.139,-0.937 -2.378,-1.428 L 52.68,7.242 C 51.942,5.798 50.392,5.334 49.097,5.334 H 35.434 c -1.26,0 -1.995,0.81 -1.995,2 0,1.266 0.82,2 2.014,2 h 9.4 c 4.003,0 7.316,2.427 7.316,7.333 0,4.936 -3.345,7.332 -7.316,7.332 H 32.772 c -1.096,0 -2.007,-0.637 -2.007,-2.023 v -2.641 c 0,-0.449 0.3,-0.668 0.67,-0.668 h 10.744 c 1.114,0 2.007,-0.671 2.007,-2 0,-1.314 -0.877,-2.002 -2.004,-2.002 l -10.106,0.002 c -1.694,0 -3.232,-0.464 -4.32,-1.18 -0.558,6.504 -5.196,10.512 -11.973,10.512 H 0.668 C 0.298,23.999 0,23.777 0,23.332 V 10.001 C 0,9.558 0.294,9.336 0.657,9.334 h 5.32 c 1.419,0 2.049,0.911 2.049,1.99 V 18 H 8.03 c 0,0.443 0.294,0.663 0.656,0.666 h 4.616 c 3.63,0 6.65,-2.204 6.65,-6.665 0,-4.469 -3.007,-6.666 -6.65,-6.666 H 0.652 C 0.292,5.328 0,5.11 0,4.666 V 2.02 C 0,0.524 1.055,0 2.026,0 h 13.825 c 3.892,0 7.412,1.445 9.484,4.109 C 26.46,1.399 28.977,0 32.137,0 h 19.8 c 2.433,0 5.186,0.837 6.618,3.652 l 6.407,13.474 c 0.066,0.138 0.196,0.203 0.359,0.203 0.149,0 0.288,-0.055 0.356,-0.196 0,0 7.923,-16.714 7.97,-16.81 C 73.687,0.233 73.851,0 74.237,0 H 80.33 C 80.701,0 81,0.22 81,0.666 a 0.78,0.78 0 0 1 -0.066,0.326 z"/></svg><span>Tracking Center</span></a><form id="global-tracking-form" class="global-tracking-search" role="search"><label class="sr-only" for="global-tracking-query">Cerca tracking o riferimento ordine</label><input id="global-tracking-query" type="search" placeholder="Cerca tracking, riferimento o ID ordine"><button type="submit">Cerca</button></form><div class="topbar-actions"><span class="topbar-live"><i aria-hidden="true"></i> Sistema locale</span><button id="topbar-help-btn" type="button" class="topbar-help" title="Guida e funzionamento dell'applicazione">? <span>Aiuto</span></button><span class="topbar-user"><span aria-hidden="true">OP</span><strong>Operazioni</strong></span></div></header>`);
+  document.body.insertAdjacentHTML('afterbegin', `<header class="app-topbar"><button id="mobile-navigation-toggle" class="topbar-icon" type="button" aria-label="Apri navigazione" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button><a class="topbar-brand" href="#control" aria-label="DSV - Tracking Center"><svg class="dsv-brand-logo" viewBox="0 0 81 24" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M 70.537,22.559 C 70.272,23.074 69.493,24 68.14,24 h -5.557 c -1.344,0 -2.139,-0.937 -2.378,-1.428 L 52.68,7.242 C 51.942,5.798 50.392,5.334 49.097,5.334 H 35.434 c -1.26,0 -1.995,0.81 -1.995,2 0,1.266 0.82,2 2.014,2 h 9.4 c 4.003,0 7.316,2.427 7.316,7.333 0,4.936 -3.345,7.332 -7.316,7.332 H 32.772 c -1.096,0 -2.007,-0.637 -2.007,-2.023 v -2.641 c 0,-0.449 0.3,-0.668 0.67,-0.668 h 10.744 c 1.114,0 2.007,-0.671 2.007,-2 0,-1.314 -0.877,-2.002 -2.004,-2.002 l -10.106,0.002 c -1.694,0 -3.232,-0.464 -4.32,-1.18 -0.558,6.504 -5.196,10.512 -11.973,10.512 H 0.668 C 0.298,23.999 0,23.777 0,23.332 V 10.001 C 0,9.558 0.294,9.336 0.657,9.334 h 5.32 c 1.419,0 2.049,0.911 2.049,1.99 V 18 H 8.03 c 0,0.443 0.294,0.663 0.656,0.666 h 4.616 c 3.63,0 6.65,-2.204 6.65,-6.665 0,-4.469 -3.007,-6.666 -6.65,-6.666 H 0.652 C 0.292,5.328 0,5.11 0,4.666 V 2.02 C 0,0.524 1.055,0 2.026,0 h 13.825 c 3.892,0 7.412,1.445 9.484,4.109 C 26.46,1.399 28.977,0 32.137,0 h 19.8 c 2.433,0 5.186,0.837 6.618,3.652 l 6.407,13.474 c 0.066,0.138 0.196,0.203 0.359,0.203 0.149,0 0.288,-0.055 0.356,-0.196 0,0 7.923,-16.714 7.97,-16.81 C 73.687,0.233 73.851,0 74.237,0 H 80.33 C 80.701,0 81,0.22 81,0.666 a 0.78,0.78 0 0 1 -0.066,0.326 z"/></svg><span>Tracking Center</span></a><form id="global-tracking-form" class="global-tracking-search" role="search"><label class="sr-only" for="global-tracking-query">Cerca spedizioni</label><span class="global-search-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg></span><input id="global-tracking-query" type="search" placeholder="Cerca tracking, riferimento o ID ordine" autocomplete="off" spellcheck="false" aria-autocomplete="list" aria-controls="global-search-results" aria-expanded="false"><button id="global-search-clear" class="global-search-clear" type="button" aria-label="Cancella ricerca" title="Cancella ricerca" hidden><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8"/></svg></button><button class="global-search-submit" type="submit">Cerca</button><div id="global-search-results" class="global-search-results" role="listbox" aria-label="Risultati ricerca spedizioni" aria-live="polite" hidden></div></form><div class="topbar-actions"><span class="topbar-live"><i aria-hidden="true"></i> Sistema locale</span><button id="topbar-help-btn" type="button" class="topbar-help" title="Guida e funzionamento dell'applicazione">? <span>Aiuto</span></button><span class="topbar-user"><span aria-hidden="true">OP</span><strong>Operazioni</strong></span></div></header>`);
   main.insertAdjacentHTML('afterbegin', `<aside class="workspace-nav"><div class="nav-heading"><span>OPERAZIONI</span><button id="desktop-navigation-toggle" type="button" title="Comprimi navigazione" aria-label="Comprimi navigazione" aria-expanded="true"><svg viewBox="0 0 24 24"><path d="m14 7-5 5 5 5"/></svg></button></div><nav aria-label="Navigazione principale"><button data-view-link="control" title="Centro di controllo">${icons.control}<span>Centro di controllo</span></button><button data-view-link="import" title="Importa spedizioni">${icons.import}<span>Importa spedizioni</span></button><button data-view-link="history" title="Storico importazioni">${icons.history}<span>Storico importazioni</span></button><span class="nav-section">SISTEMA</span><button data-view-link="settings" title="Configurazione">${icons.settings}<span>Configurazione</span></button></nav><p class="nav-note">Dati operativi e note conservati localmente.</p></aside><button id="navigation-backdrop" class="navigation-backdrop" type="button" aria-label="Chiudi navigazione"></button>`);
   main.querySelectorAll('[data-view-link]').forEach((button) => button.addEventListener('click', () => { location.hash = button.dataset.viewLink; document.body.classList.remove('navigation-open'); $('#mobile-navigation-toggle').setAttribute('aria-expanded', 'false'); }));
   $('#desktop-navigation-toggle').addEventListener('click', () => { const collapsed = document.body.classList.toggle('sidebar-collapsed'); $('#desktop-navigation-toggle').setAttribute('aria-expanded', String(!collapsed)); $('#desktop-navigation-toggle').setAttribute('aria-label', collapsed ? 'Espandi navigazione' : 'Comprimi navigazione'); });
   $('#mobile-navigation-toggle').addEventListener('click', () => { const open = document.body.classList.toggle('navigation-open'); $('#mobile-navigation-toggle').setAttribute('aria-expanded', String(open)); });
   $('#navigation-backdrop').addEventListener('click', () => { document.body.classList.remove('navigation-open'); $('#mobile-navigation-toggle').setAttribute('aria-expanded', 'false'); });
-  $('#global-tracking-form').addEventListener('submit', (event) => { event.preventDefault(); controlPage = 1; location.hash = 'control'; refreshControlCenter(); });
-  $('#global-tracking-query')?.addEventListener('input', () => {
-    controlPage = 1;
-    if ($('#control-search-query')) $('#control-search-query').value = $('#global-tracking-query').value;
-    clearTimeout(window.controlSearchTimer);
-    window.controlSearchTimer = setTimeout(refreshControlCenter, 300);
-  });
+  setupGlobalShipmentSearch();
   $('#refresh-history').addEventListener('click', renderImportHistory);
   $('#import-reload-catalog-btn')?.addEventListener('click', () => loadCatalog(false));
   $('#state-mapping-form').addEventListener('submit', saveStateMappings);
@@ -3109,6 +3111,171 @@ function setupWorkspace() {
   });
   setupControlWorkspace();
   window.addEventListener('hashchange', () => showView(location.hash.slice(1) || 'control'));
+}
+
+function highlightGlobalSearchMatch(value, query) {
+  const text = String(value || '');
+  const needle = String(query || '').trim();
+  const index = text.toLocaleLowerCase('it-IT').indexOf(needle.toLocaleLowerCase('it-IT'));
+  if (!needle || index < 0) return escapeHtml(text || '—');
+  return `${escapeHtml(text.slice(0, index))}<mark>${escapeHtml(text.slice(index, index + needle.length))}</mark>${escapeHtml(text.slice(index + needle.length))}`;
+}
+
+function closeGlobalSearchResults({ clear = false } = {}) {
+  const input = $('#global-tracking-query');
+  const menu = $('#global-search-results');
+  if (globalSearchAbortController) globalSearchAbortController.abort();
+  globalSearchAbortController = null;
+  globalSearchActiveIndex = -1;
+  if (clear) globalSearchResults = [];
+  if (menu) {
+    menu.hidden = true;
+    menu.querySelectorAll('[role="option"]').forEach((option) => option.classList.remove('active'));
+  }
+  input?.setAttribute('aria-expanded', 'false');
+  input?.removeAttribute('aria-activedescendant');
+}
+
+function updateGlobalSearchSelection(index) {
+  const input = $('#global-tracking-query');
+  const options = [...document.querySelectorAll('#global-search-results [role="option"]')];
+  if (!options.length) return;
+  globalSearchActiveIndex = (index + options.length) % options.length;
+  options.forEach((option, optionIndex) => {
+    const active = optionIndex === globalSearchActiveIndex;
+    option.classList.toggle('active', active);
+    option.setAttribute('aria-selected', String(active));
+    if (active) option.scrollIntoView({ block: 'nearest' });
+  });
+  input?.setAttribute('aria-activedescendant', options[globalSearchActiveIndex].id);
+}
+
+function renderGlobalSearchResults(payload, query) {
+  const menu = $('#global-search-results');
+  const input = $('#global-tracking-query');
+  if (!menu || !input || input.value.trim() !== query) return;
+  globalSearchResults = payload.records || [];
+  globalSearchActiveIndex = -1;
+  const total = Number(payload.total || 0);
+  if (!globalSearchResults.length) {
+    menu.innerHTML = `<div class="global-search-empty"><strong>Nessuna spedizione trovata</strong><span>Prova con tracking, riferimento ordine, ID, stato o località DSV.</span></div>`;
+  } else {
+    const rows = globalSearchResults.map((record, index) => {
+      const reference = record.orderReference || (record.orderId ? `ID ${record.orderId}` : 'Ordine non collegato');
+      const prestaState = record.currentState || 'Stato PrestaShop non disponibile';
+      return `<button id="global-search-option-${index}" class="global-search-result" type="button" role="option" aria-selected="false" data-search-index="${index}"><span class="global-search-result-main"><strong>${highlightGlobalSearchMatch(record.trackingNumber, query)}</strong><span>${highlightGlobalSearchMatch(reference, query)}</span></span><span class="global-search-result-status"><span class="global-search-dsv-status">${escapeHtml(record.dsvStatus || 'Non verificato')}</span><span>${escapeHtml(prestaState)}</span></span>${record.archived ? '<span class="global-search-archived">Archiviata</span>' : '<svg class="global-search-open-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5"/></svg>'}</button>`;
+    }).join('');
+    const shownLabel = total > globalSearchResults.length ? `${globalSearchResults.length} di ${total}` : `${total}`;
+    menu.innerHTML = `<div class="global-search-meta"><span><strong>${shownLabel}</strong> risultat${total === 1 ? 'o' : 'i'}</span><span><kbd>↑</kbd><kbd>↓</kbd> per navigare · <kbd>Invio</kbd> per aprire</span></div><div class="global-search-list">${rows}</div>`;
+  }
+  menu.hidden = false;
+  input.setAttribute('aria-expanded', 'true');
+  input.removeAttribute('aria-activedescendant');
+}
+
+async function fetchGlobalSearchSuggestions(query) {
+  if (globalSearchAbortController) globalSearchAbortController.abort();
+  const requestId = ++globalSearchRequestId;
+  globalSearchAbortController = new AbortController();
+  const menu = $('#global-search-results');
+  if (menu) {
+    menu.innerHTML = '<div class="global-search-loading"><span aria-hidden="true"></span>Ricerca spedizioni…</div>';
+    menu.hidden = false;
+    $('#global-tracking-query')?.setAttribute('aria-expanded', 'true');
+  }
+  try {
+    const payload = await request(`/api/control-center/search?q=${encodeURIComponent(query)}&limit=6`, { signal: globalSearchAbortController.signal });
+    if (requestId !== globalSearchRequestId) return;
+    renderGlobalSearchResults(payload, query);
+  } catch (error) {
+    if (error?.name === 'AbortError' || requestId !== globalSearchRequestId) return;
+    if (menu) {
+      menu.innerHTML = `<div class="global-search-empty error"><strong>Ricerca non disponibile</strong><span>${escapeHtml(error.message)}</span></div>`;
+      menu.hidden = false;
+    }
+  }
+}
+
+function openGlobalSearchShipment(index) {
+  const record = globalSearchResults[index];
+  if (!record?.trackingNumber) return;
+  closeGlobalSearchResults();
+  location.hash = 'control';
+  openShipmentDetail(record.trackingNumber);
+}
+
+function setupGlobalShipmentSearch() {
+  const form = $('#global-tracking-form');
+  const input = $('#global-tracking-query');
+  const clearButton = $('#global-search-clear');
+  const menu = $('#global-search-results');
+  if (!form || !input || !menu) return;
+
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    if (globalSearchActiveIndex >= 0) return openGlobalSearchShipment(globalSearchActiveIndex);
+    if (globalSearchResults.length === 1 && !menu.hidden) return openGlobalSearchShipment(0);
+    closeGlobalSearchResults();
+    controlPage = 1;
+    location.hash = 'control';
+    refreshControlCenter();
+  });
+  input.addEventListener('input', () => {
+    const query = input.value.trim();
+    clearButton.hidden = !query;
+    controlPage = 1;
+    if ($('#control-search-query')) $('#control-search-query').value = input.value;
+    clearTimeout(globalSearchSuggestTimer);
+    clearTimeout(globalSearchFilterTimer);
+    if (query.length >= 2) globalSearchSuggestTimer = setTimeout(() => fetchGlobalSearchSuggestions(query), 160);
+    else closeGlobalSearchResults({ clear: true });
+    globalSearchFilterTimer = setTimeout(refreshControlCenter, 260);
+    updateControlFilterUi();
+  });
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowDown' && globalSearchResults.length) {
+      event.preventDefault();
+      updateGlobalSearchSelection(globalSearchActiveIndex + 1);
+    } else if (event.key === 'ArrowUp' && globalSearchResults.length) {
+      event.preventDefault();
+      updateGlobalSearchSelection(globalSearchActiveIndex - 1);
+    } else if (event.key === 'Escape') {
+      if (!menu.hidden) closeGlobalSearchResults();
+      else if (input.value) clearButton.click();
+    }
+  });
+  input.addEventListener('focus', () => {
+    if (globalSearchResults.length && input.value.trim().length >= 2) {
+      menu.hidden = false;
+      input.setAttribute('aria-expanded', 'true');
+    }
+  });
+  clearButton.addEventListener('click', () => {
+    input.value = '';
+    clearButton.hidden = true;
+    closeGlobalSearchResults({ clear: true });
+    controlPage = 1;
+    updateControlFilterUi();
+    refreshControlCenter();
+    input.focus();
+  });
+  menu.addEventListener('mousedown', (event) => event.preventDefault());
+  menu.addEventListener('click', (event) => {
+    const option = event.target.closest('[data-search-index]');
+    if (option) openGlobalSearchShipment(Number(option.dataset.searchIndex));
+  });
+  document.addEventListener('click', (event) => {
+    if (!form.contains(event.target)) closeGlobalSearchResults();
+  });
+  document.addEventListener('keydown', (event) => {
+    const target = event.target;
+    const isTyping = target?.matches?.('input, textarea, select, [contenteditable="true"]');
+    if (event.key === '/' && !isTyping && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      event.preventDefault();
+      input.focus();
+      input.select();
+    }
+  });
 }
 
 function setupControlWorkspace() {
@@ -3160,7 +3327,7 @@ function setupControlWorkspace() {
     updateControlFilterUi();
     refreshControlCenter();
   });
-  $('#control-clear-filters').addEventListener('click', () => { if ($('#global-tracking-query')) $('#global-tracking-query').value = ''; if ($('#control-search-query')) $('#control-search-query').value = ''; if ($('#control-dsv-filter')) $('#control-dsv-filter').value = ''; if ($('#control-date-filter')) $('#control-date-filter').value = ''; if ($('#control-exceptions')) $('#control-exceptions').checked = false; controlMetricFilter = 'all'; controlPrestaStateFilter = ''; controlSortDir = 'desc'; updateControlSortUi(); closeControlPrestaFilter(); controlPage = 1; refreshControlCenter(); });
+  $('#control-clear-filters').addEventListener('click', () => { if ($('#global-tracking-query')) $('#global-tracking-query').value = ''; if ($('#global-search-clear')) $('#global-search-clear').hidden = true; closeGlobalSearchResults({ clear: true }); if ($('#control-search-query')) $('#control-search-query').value = ''; if ($('#control-dsv-filter')) $('#control-dsv-filter').value = ''; if ($('#control-date-filter')) $('#control-date-filter').value = ''; if ($('#control-exceptions')) $('#control-exceptions').checked = false; controlMetricFilter = 'all'; controlPrestaStateFilter = ''; controlSortDir = 'desc'; updateControlSortUi(); closeControlPrestaFilter(); controlPage = 1; refreshControlCenter(); });
   $('#control-bulk-clear').addEventListener('click', () => { controlSelectedTrackingNumbers.clear(); lastControlSelectedTrackingNumber = ''; refreshControlCenter(); });
   $('#control-bulk-verify').addEventListener('click', () => $('#verify-control-selected').click());
   $('#control-bulk-sync-prestashop').addEventListener('click', openBulkPrestaShopDialog);

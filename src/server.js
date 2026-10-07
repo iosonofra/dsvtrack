@@ -10,7 +10,7 @@ import { DEFAULT_DSV_TRACKING_URL, DSV_DELIVERY_EVENT_STATUSES, DSV_PARSER_VERSI
 import { DsvCronService } from './dsv-cron.js';
 import { CRON_PRESETS, describeCronExpression, getNextCronOccurrences, validateCronExpression } from './cron-scheduler.js';
 import { NotificationService } from './notification-service.js';
-import { archiveShipment, deleteArchivedShipment, deleteImportBatch, exportShipmentsData, getAuditLog, getControlCenter, getCronRunHistory, getExistingShipmentsIndex, getImportBatches, getShipment, linkShipmentToPrestaShopOrder, registerCronRun, registerImportBatch, restoreShipmentsData, syncAppliedShipments, syncDsvShipments, syncManualPrestaShopState, syncShipmentPrestaShopShipping, syncVerifiedShipments, updateShipmentCase } from './shipment-store.js';
+import { archiveShipment, deleteArchivedShipment, deleteImportBatch, exportShipmentsData, getAuditLog, getControlCenter, getCronRunHistory, getExistingShipmentsIndex, getImportBatches, getShipment, linkShipmentToPrestaShopOrder, registerCronRun, registerImportBatch, restoreShipmentsData, searchShipments, syncAppliedShipments, syncDsvShipments, syncManualPrestaShopState, syncShipmentPrestaShopShipping, syncVerifiedShipments, updateShipmentCase } from './shipment-store.js';
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -593,6 +593,14 @@ app.get('/api/control-center', async (req, res) => {
       sortDir: req.query.sortDir,
     });
     res.json({ ...result, stateMappings: normalizeDsvStateMappings(connection.dsvStateMappings) });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.get('/api/control-center/search', async (req, res) => {
+  try {
+    const query = String(req.query.q || '').trim();
+    if (query.length > 160) return res.status(400).json({ error: 'La ricerca è troppo lunga.' });
+    res.json(await searchShipments(query, { limit: req.query.limit }));
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 

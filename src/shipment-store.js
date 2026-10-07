@@ -56,6 +56,77 @@ export function normalizeStoredDsvStatus(value) {
   return String(value || '').trim();
 }
 
+export function normalizeShipmentSearchValue(value) {
+  const text = String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLocaleLowerCase('it-IT')
+    .trim()
+    .replace(/\s+/g, ' ');
+  return {
+    text,
+    compact: text.replace(/[^a-z0-9]+/g, ''),
+  };
+}
+
+const SHIPMENT_SEARCH_FIELDS = [
+  ['trackingNumber', 100],
+  ['orderReference', 90],
+  ['orderId', 88],
+  ['existingTracking', 84],
+  ['dsvStatus', 42],
+  ['currentState', 38],
+  ['prestaCarrierName', 34],
+  ['dsvEventLocation', 30],
+  ['dsvRawStatus', 28],
+  ['dsvEventReason', 24],
+];
+
+export function shipmentSearchScore(record, query) {
+  const normalizedQuery = normalizeShipmentSearchValue(query);
+  if (!normalizedQuery.compact) return 0;
+  const fields = SHIPMENT_SEARCH_FIELDS.map(([key, weight]) => ({
+    key,
+    weight,
+    ...normalizeShipmentSearchValue(record?.[key]),
+  })).filter((field) => field.compact);
+  if (!fields.length) return 0;
+
+  let best = 0;
+  for (const field of fields) {
+    const isIdentifier = ['trackingNumber', 'orderReference', 'orderId', 'existingTracking'].includes(field.key);
+    const exactBase = isIdentifier ? 1000 : 150;
+    const prefixBase = isIdentifier ? 500 : 100;
+    const partialBase = isIdentifier ? 200 : 50;
+    if (field.compact === normalizedQuery.compact) best = Math.max(best, exactBase + field.weight);
+    else if (field.compact.startsWith(normalizedQuery.compact)) best = Math.max(best, prefixBase + field.weight);
+    else if (field.compact.includes(normalizedQuery.compact) || field.text.includes(normalizedQuery.text)) best = Math.max(best, partialBase + field.weight);
+  }
+  if (best) return best;
+
+  const tokens = normalizedQuery.text.split(/\s+/).map((token) => normalizeShipmentSearchValue(token).compact).filter(Boolean);
+  if (tokens.length < 2) return 0;
+  let tokenScore = 0;
+  for (const token of tokens) {
+    const matches = fields.filter((field) => field.compact.includes(token));
+    if (!matches.length) return 0;
+    tokenScore += Math.max(...matches.map((field) => field.weight));
+  }
+  return 100 + tokenScore;
+}
+
+export function rankShipmentSearchRecords(records, query) {
+  return records
+    .map((record) => ({ ...record, searchScore: shipmentSearchScore(record, query) }))
+    .filter((record) => record.searchScore > 0)
+    .sort((a, b) => {
+      if (b.searchScore !== a.searchScore) return b.searchScore - a.searchScore;
+      if (Boolean(a.archived) !== Boolean(b.archived)) return a.archived ? 1 : -1;
+      const timestampComparison = String(b.dsvCheckedAt || b.lastSeenAt || '').localeCompare(String(a.dsvCheckedAt || a.lastSeenAt || ''));
+      return timestampComparison || String(a.trackingNumber || '').localeCompare(String(b.trackingNumber || ''));
+    });
+}
+
 // Le vecchie verifiche potevano salvare la fase generica anche quando lo
 // storico acquisito nello stesso controllo terminava con un evento Partito.
 // Non si applica a consegne, eccezioni o fasi più avanzate.
@@ -298,7 +369,7 @@ export async function linkShipmentToPrestaShopOrder(trackingNumber, {
 
 export async function getControlCenter({ query = '', status = '', dsvStatus = '', prestaState = '', checkedAfter = '', exceptionOnly = false, archived = false, page = 1, pageSize = 50, sortDir = 'desc' } = {}) {
   const db = await load();
-  const needle = String(query).trim().toLocaleLowerCase('it-IT');
+  const normalizedQuery = String(query).trim();
   const isArchivedView = archived === true || archived === '1' || archived === 'true' || dsvStatus === 'Archiviate';
   const allRecords = Object.values(db.shipments).map((record) => ({
     ...record,
@@ -313,8 +384,11 @@ export async function getControlCenter({ query = '', status = '', dsvStatus = ''
 
   const targetRecords = isArchivedView ? archivedRecords : activeRecords;
 
-  const filteredWithoutPrestaState = targetRecords.filter((record) => {
-    const matchesQuery = !needle || [record.trackingNumber, record.orderReference, record.orderId, record.dsvStatus, record.dsvRawStatus, record.dsvEventReason].some((value) => String(value || '').toLocaleLowerCase('it-IT').includes(needle));
+  const filteredWithoutPrestaState = targetRecords.map((record) => ({
+    ...record,
+    searchScore: normalizedQuery ? shipmentSearchScore(record, normalizedQuery) : 0,
+  })).filter((record) => {
+    const matchesQuery = !normalizedQuery || record.searchScore > 0;
     const matchesStatus = matchesOperationalStatus(record.operationalStatus, status);
     const matchesDsvStatus = (!dsvStatus || dsvStatus === 'Archiviate') ? true : (record.dsvStatus || 'Non verificato') === dsvStatus;
     const matchesCheckedAfter = !checkedAfter || String(record.dsvCheckedAt || record.lastSeenAt || '') >= `${checkedAfter}T00:00:00.000Z`;
@@ -340,6 +414,7 @@ export async function getControlCenter({ query = '', status = '', dsvStatus = ''
     if (normalizedPrestaState === '__unavailable__') return Boolean(record.orderId) && !String(record.currentState || '').trim();
     return String(record.currentState || '').trim().toLocaleLowerCase('it-IT') === normalizedPrestaState.toLocaleLowerCase('it-IT');
   }).sort((a, b) => {
+    if (normalizedQuery && b.searchScore !== a.searchScore) return b.searchScore - a.searchScore;
     const tsA = getSortTimestamp(a);
     const tsB = getSortTimestamp(b);
     if (!tsA && !tsB) return String(a.trackingNumber).localeCompare(String(b.trackingNumber));
@@ -375,7 +450,35 @@ export async function getControlCenter({ query = '', status = '', dsvStatus = ''
     pageSize: normalizedPageSize,
     totalPages,
     sortDir: normalizedSortDir,
-    records: filtered.slice(offset, offset + normalizedPageSize),
+    records: filtered.slice(offset, offset + normalizedPageSize).map(({ searchScore, ...record }) => record),
+  };
+}
+
+export async function searchShipments(query, { limit = 6 } = {}) {
+  const db = await load();
+  const normalizedQuery = String(query || '').trim();
+  const normalizedLimit = Math.min(10, Math.max(1, Number.parseInt(limit, 10) || 6));
+  if (!normalizedQuery) return { query: '', total: 0, records: [] };
+  const ranked = rankShipmentSearchRecords(Object.values(db.shipments).map((record) => ({
+    ...record,
+    archived: Boolean(record.archived),
+    dsvStatus: normalizeStoredDsvStatus(record.dsvStatus),
+    operationalStatus: operationalStatus(record),
+  })), normalizedQuery);
+  return {
+    query: normalizedQuery,
+    total: ranked.length,
+    records: ranked.slice(0, normalizedLimit).map((record) => ({
+      trackingNumber: record.trackingNumber || '',
+      orderReference: record.orderReference || '',
+      orderId: record.orderId || '',
+      dsvStatus: record.dsvStatus || 'Non verificato',
+      currentState: record.currentState || '',
+      archived: Boolean(record.archived),
+      dsvCheckedAt: record.dsvCheckedAt || null,
+      lastSeenAt: record.lastSeenAt || null,
+      matchScore: record.searchScore,
+    })),
   };
 }
 
