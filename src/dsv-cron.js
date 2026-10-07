@@ -12,14 +12,32 @@ import {
 
 export function isWithinActiveHours(config = {}, date = new Date()) {
   if (!config.nightPause) return true;
-  const hour = date.getHours();
-  const start = Number(config.startHour ?? 8);
-  const end = Number(config.endHour ?? 20);
-  if (start <= end) {
-    return hour >= start && hour <= end;
-  }
-  // Finestra a cavallo della mezzanotte (es. 22:00 -> 06:00)
-  return hour >= start || hour <= end;
+  const minute = (date.getHours() * 60) + date.getMinutes();
+  const start = Number(config.startHour ?? 20) * 60;
+  const end = Number(config.endHour ?? 8) * 60;
+  if (start === end) return true;
+  const isPaused = start < end
+    ? minute >= start && minute < end
+    : minute >= start || minute < end;
+  return !isPaused;
+}
+
+export function getNextActiveDate(config = {}, date = new Date()) {
+  const current = new Date(date);
+  if (isWithinActiveHours(config, current)) return current;
+  const endHour = Number(config.endHour ?? 8);
+  const resume = new Date(current);
+  resume.setHours(endHour, 0, 0, 0);
+  if (resume.getTime() <= current.getTime()) resume.setDate(resume.getDate() + 1);
+  return resume;
+}
+
+export function getNextIntervalRunAt(config = {}, date = new Date()) {
+  const current = new Date(date);
+  if (!isWithinActiveHours(config, current)) return getNextActiveDate(config, current);
+  const intervalMs = Math.max(15, Number(config.intervalMinutes) || 60) * 60_000;
+  const candidate = new Date(current.getTime() + intervalMs);
+  return isWithinActiveHours(config, candidate) ? candidate : getNextActiveDate(config, candidate);
 }
 
 export function selectCronCandidates(shipments = {}, options = {}) {
@@ -115,6 +133,7 @@ export class DsvCronService {
     applyOrderState,
     syncManualState,
     notificationService,
+    recordCronRun,
     logger = console,
     jitterFn = () => 4000 + Math.floor(Math.random() * 2000),
   }) {
@@ -126,6 +145,7 @@ export class DsvCronService {
     this.applyOrderState = applyOrderState;
     this.syncManualState = syncManualState;
     this.notificationService = notificationService;
+    this.recordCronRun = recordCronRun;
     this.logger = logger;
     this.jitterFn = jitterFn;
 
@@ -163,10 +183,11 @@ export class DsvCronService {
       return;
     }
 
+    const now = new Date();
     let delayMs = 60_000;
     if (config.scheduleMode === 'cron') {
       try {
-        const nextDate = getNextCronOccurrence(config.cronExpression, new Date(), config.timeZone || 'Europe/Rome');
+        const nextDate = getNextCronOccurrence(config.cronExpression, now, config.timeZone || 'Europe/Rome');
         this.nextRunAt = nextDate.toISOString();
         delayMs = Math.max(1000, nextDate.getTime() - Date.now());
       } catch (err) {
@@ -175,9 +196,9 @@ export class DsvCronService {
         this.nextRunAt = new Date(Date.now() + delayMs).toISOString();
       }
     } else {
-      const intervalMs = Math.max(15, Number(config.intervalMinutes) || 60) * 60_000;
-      this.nextRunAt = new Date(Date.now() + intervalMs).toISOString();
-      delayMs = intervalMs;
+      const nextDate = getNextIntervalRunAt(config, now);
+      this.nextRunAt = nextDate.toISOString();
+      delayMs = Math.max(1000, nextDate.getTime() - now.getTime());
     }
 
     this.timer = setTimeout(async () => {
@@ -267,6 +288,17 @@ export class DsvCronService {
     return { ok: false, message: 'Nessuna scansione in esecuzione.' };
   }
 
+  async rememberRun(summary) {
+    this.lastRunSummary = summary;
+    if (summary.type !== 'skipped') this.lastRunAt = summary.at;
+    if (!this.recordCronRun) return;
+    try {
+      await this.recordCronRun(summary);
+    } catch (error) {
+      this.logger.error('[DSV-CRON] Impossibile salvare lo storico del ciclo:', error.message);
+    }
+  }
+
   async triggerScan({ manual = false } = {}) {
     if (this.isRunning) {
       throw new Error('Un ciclo di controllo delle spedizioni è già in corso.');
@@ -280,20 +312,30 @@ export class DsvCronService {
     if (!manual) {
       if (!config.enabled) return;
       if (config.scheduleMode !== 'cron' && !isWithinActiveHours(config)) {
-        this.lastRunSummary = {
+        const summary = {
           at: new Date().toISOString(),
           type: 'skipped',
-          reason: `Pausa notturna attiva (orario attivo: ${config.startHour}:00 - ${config.endHour}:00)`,
+          trigger: 'automatic',
+          reason: `Pausa notturna attiva (${config.startHour}:00–${config.endHour}:00)`,
         };
-        // Ricalcola il prossimo orario
-        const intervalMs = Math.max(15, Number(config.intervalMinutes) || 60) * 60_000;
-        this.nextRunAt = new Date(Date.now() + intervalMs).toISOString();
-        return;
+        await this.rememberRun(summary);
+        return summary;
       }
     }
 
     if (!dsvBetaConfig?.enabled) {
-      throw new Error('La funzionalità DSV Beta deve essere abilitata nelle impostazioni per usare Camofox.');
+      const error = new Error('La funzionalità DSV Beta deve essere abilitata nelle impostazioni per usare Camofox.');
+      await this.rememberRun({
+        at: new Date().toISOString(),
+        type: 'failed',
+        trigger: manual ? 'manual' : 'automatic',
+        checked: 0,
+        totalCandidates: 0,
+        errors: 1,
+        durationSeconds: 0,
+        reason: error.message,
+      });
+      throw error;
     }
 
     this.isRunning = true;
@@ -310,9 +352,10 @@ export class DsvCronService {
 
       if (!candidates.length) {
         this.lastRunAt = new Date().toISOString();
-        this.lastRunSummary = {
+        const summary = {
           at: this.lastRunAt,
           type: 'complete',
+          trigger: manual ? 'manual' : 'automatic',
           totalCandidates: 0,
           checked: 0,
           deliveredFound: 0,
@@ -320,7 +363,8 @@ export class DsvCronService {
           durationSeconds: 0,
           reason: 'Nessuna spedizione in attesa da verificare',
         };
-        return this.lastRunSummary;
+        await this.rememberRun(summary);
+        return summary;
       }
 
       this.activeProgress = {
@@ -339,6 +383,10 @@ export class DsvCronService {
       for (let i = 0; i < candidates.length; i++) {
         if (this.cancelRequested) {
           this.logger.log('[DSV-CRON] Scansione interrotta dall\'operatore.');
+          break;
+        }
+        if (!manual && config.scheduleMode !== 'cron' && !isWithinActiveHours(config)) {
+          this.logger.log('[DSV-CRON] Pausa notturna iniziata: il ciclo si ferma prima della prossima spedizione.');
           break;
         }
 
@@ -437,9 +485,12 @@ export class DsvCronService {
 
       this.lastRunAt = new Date().toISOString();
       const durationSeconds = Math.round((Date.now() - startTime) / 1000);
-      this.lastRunSummary = {
+      const pausedBySchedule = !manual && this.activeProgress.completed < candidates.length
+        && config.scheduleMode !== 'cron' && !isWithinActiveHours(config) && !this.cancelRequested;
+      const summary = {
         at: this.lastRunAt,
-        type: this.cancelRequested ? 'cancelled' : 'complete',
+        type: this.cancelRequested ? 'cancelled' : pausedBySchedule ? 'paused' : 'complete',
+        trigger: manual ? 'manual' : 'automatic',
         totalCandidates: candidates.length,
         checked: this.activeProgress.completed,
         deliveredFound: deliveredCount,
@@ -449,19 +500,27 @@ export class DsvCronService {
         effectiveSpeedProfile: betaClient.getRuntimeProfile?.().effective || dsvBetaConfig.speedProfile || 'safe',
         fallbackReason: betaClient.getRuntimeProfile?.().fallbackReason || '',
       };
-
-      return this.lastRunSummary;
+      await this.rememberRun(summary);
+      return summary;
+    } catch (error) {
+      const summary = {
+        at: new Date().toISOString(),
+        type: 'failed',
+        trigger: manual ? 'manual' : 'automatic',
+        checked: this.activeProgress?.completed || 0,
+        totalCandidates: this.activeProgress?.total || 0,
+        errors: 1,
+        durationSeconds: Math.round((Date.now() - startTime) / 1000),
+        reason: error.message,
+      };
+      await this.rememberRun(summary);
+      throw error;
     } finally {
       await betaClient?.close?.();
       this.isRunning = false;
       this.cancelRequested = false;
       this.activeProgress = null;
 
-      // Ricalcola il prossimo orario se il timer è attivo
-      if (this.timer && config?.enabled) {
-        const intervalMs = Math.max(15, Number(config.intervalMinutes) || 60) * 60_000;
-        this.nextRunAt = new Date(Date.now() + intervalMs).toISOString();
-      }
     }
   }
 

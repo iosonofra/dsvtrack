@@ -88,8 +88,16 @@ export function normalizeCronSettings(input = {}) {
   const cronPreset = String(input.cronPreset || '').trim();
   const timeZone = String(input.timeZone || 'Europe/Rome').trim() || 'Europe/Rome';
   const nightPause = input.nightPause !== undefined ? Boolean(input.nightPause) : true;
-  const startHour = Math.min(Math.max(Number(input.startHour) || 8, 0), 23);
-  const endHour = Math.min(Math.max(Number(input.endHour) || 20, 0), 23);
+  const rawStartHour = Number(input.startHour ?? 20);
+  const rawEndHour = Number(input.endHour ?? 8);
+  let startHour = Number.isFinite(rawStartHour) ? Math.min(Math.max(rawStartHour, 0), 23) : 20;
+  let endHour = Number.isFinite(rawEndHour) ? Math.min(Math.max(rawEndHour, 0), 23) : 8;
+  // Prima della versione 2 i campi rappresentavano la fascia attiva. La UI li
+  // descriveva però come pausa notturna: migriamo il caso diurno più comune
+  // (08→20) nella corrispondente pausa (20→08). Le fasce già notturne restano intatte.
+  if (input.nightPauseMode !== 'pause-window' && startHour < endHour) {
+    [startHour, endHour] = [endHour, startHour];
+  }
   const batchSize = Math.min(Math.max(Number(input.batchSize) || 25, 1), 100);
   const minCheckIntervalHours = Math.min(Math.max(Number(input.minCheckIntervalHours) || 2, 0.5), 72);
 
@@ -120,6 +128,7 @@ export function normalizeCronSettings(input = {}) {
     cronPreset,
     timeZone,
     nightPause,
+    nightPauseMode: 'pause-window',
     startHour,
     endHour,
     batchSize,

@@ -1872,6 +1872,13 @@ function renderCronStatus(status) {
   const intervalMedium = $('#cron-interval-medium');
   const intervalLow = $('#cron-interval-low');
 
+  const startLabel = startHourInput?.closest('label');
+  const endLabel = endHourInput?.closest('label');
+  if (startLabel?.firstChild?.nodeType === Node.TEXT_NODE) startLabel.firstChild.nodeValue = 'Pausa dalle ';
+  if (endLabel?.firstChild?.nodeType === Node.TEXT_NODE) endLabel.firstChild.nodeValue = 'Riprendi alle ';
+  const pauseHint = hoursRow?.parentElement?.querySelector('.field-hint');
+  if (pauseHint) pauseHint.textContent = 'Nella fascia indicata (es. 20:00–08:00) i controlli si sospendono e riprendono esattamente all’ora finale.';
+
   const activeEl = document.activeElement;
   const isEditingForm = [
     enabledInput, intervalSelect, batchSizeInput, nightPauseCheckbox,
@@ -1883,8 +1890,8 @@ function renderCronStatus(status) {
     if (intervalSelect) intervalSelect.value = String(status.intervalMinutes || 60);
     if (batchSizeInput) batchSizeInput.value = String(status.batchSize || 25);
     if (nightPauseCheckbox) nightPauseCheckbox.checked = Boolean(status.nightPause);
-    if (startHourInput) startHourInput.value = String(status.startHour ?? 8);
-    if (endHourInput) endHourInput.value = String(status.endHour ?? 20);
+    if (startHourInput) startHourInput.value = String(status.startHour ?? 20);
+    if (endHourInput) endHourInput.value = String(status.endHour ?? 8);
     if (hoursRow) hoursRow.style.opacity = status.nightPause ? '1' : '0.4';
 
     const currentMode = status.scheduleMode === 'cron' ? 'cron' : 'interval';
@@ -1945,7 +1952,7 @@ function renderCronStatus(status) {
       headerBadge.style.background = '#fef3c7';
       headerBadge.style.color = '#b45309';
       headerBadge.style.borderColor = '#fde68a';
-      headerBadge.textContent = `In pausa · ${status.startHour}:00–${status.endHour}:00`;
+      headerBadge.textContent = `In pausa · riprende alle ${String(status.endHour).padStart(2, '0')}:00`;
     } else if (status.enabled) {
       headerBadge.className = 'badge info';
       headerBadge.style.background = '';
@@ -2045,6 +2052,8 @@ function renderCronStatus(status) {
       summaryList.innerHTML = '<li>Nessuna scansione recente registrata.</li>';
     } else if (s.type === 'skipped') {
       summaryList.innerHTML = `<li><em>${escapeHtml(s.reason)}</em></li><li style="color:var(--muted)">Registrato alle: ${displayDateTime(s.at)}</li>`;
+    } else if (s.type === 'failed') {
+      summaryList.innerHTML = `<li><strong>Controllo non completato.</strong></li><li>${escapeHtml(s.reason || 'Errore non specificato')}</li><li>Eseguito: ${displayDateTime(s.at)}</li>`;
     } else {
       const deliveredText = s.deliveredFound > 0
         ? `<strong style="color:var(--success)">${s.deliveredFound} spedizioni consegnate trovate!</strong>`
@@ -2052,7 +2061,9 @@ function renderCronStatus(status) {
       const errorsText = s.errors > 0
         ? `<span style="color:var(--danger)"> · ${s.errors} con errore</span>`
         : '';
-      const cancelledText = s.type === 'cancelled' ? ' <span style="color:var(--warning)">(Interrotta dall’operatore)</span>' : '';
+      const cancelledText = s.type === 'cancelled'
+        ? ' <span style="color:var(--warning)">(Interrotta dall’operatore)</span>'
+        : s.type === 'paused' ? ' <span style="color:var(--warning)">(Fermata all’inizio della pausa)</span>' : '';
       const requestedProfileText = dsvSpeedLabel(s.speedProfile, true);
       const effectiveProfileText = dsvSpeedLabel(s.effectiveSpeedProfile, true);
       const profileText = requestedProfileText === effectiveProfileText ? effectiveProfileText : `${requestedProfileText} → ${effectiveProfileText}`;
@@ -2067,6 +2078,51 @@ function renderCronStatus(status) {
       `;
     }
   }
+
+  renderCronHistory(status.runHistory || []);
+}
+
+function ensureCronHistoryUI() {
+  let section = $('#cron-history');
+  if (section) return section;
+  const manualTrigger = $('.cron-manual-trigger');
+  if (!manualTrigger) return null;
+  section = document.createElement('section');
+  section.id = 'cron-history';
+  section.className = 'cron-history';
+  section.setAttribute('aria-labelledby', 'cron-history-title');
+  section.innerHTML = `<div class="cron-history-heading"><div><h4 id="cron-history-title">Ultime esecuzioni</h4><p>Registro locale dei controlli automatici e manuali.</p></div><span id="cron-history-count" class="cron-history-count">0</span></div><ol id="cron-history-list" class="cron-history-list"><li class="cron-history-empty">Nessuna esecuzione registrata.</li></ol>`;
+  manualTrigger.before(section);
+  return section;
+}
+
+function renderCronHistory(history) {
+  if (!ensureCronHistoryUI()) return;
+  const list = $('#cron-history-list');
+  const count = $('#cron-history-count');
+  const rows = Array.isArray(history) ? history.slice(0, 8) : [];
+  if (count) count.textContent = String(rows.length);
+  if (!list) return;
+  if (!rows.length) {
+    list.innerHTML = '<li class="cron-history-empty">Nessuna esecuzione registrata.</li>';
+    return;
+  }
+  const labels = {
+    complete: 'Completato',
+    paused: 'Fermato dalla pausa',
+    cancelled: 'Interrotto',
+    failed: 'Errore',
+    skipped: 'In pausa',
+  };
+  list.innerHTML = rows.map((run) => {
+    const type = ['complete', 'paused', 'cancelled', 'failed', 'skipped'].includes(run.type) ? run.type : 'complete';
+    const source = run.trigger === 'manual' ? 'Manuale' : 'Automatico';
+    const outcome = labels[type];
+    const details = type === 'skipped' || type === 'failed'
+      ? escapeHtml(run.reason || 'Nessun dettaglio disponibile')
+      : `${Number(run.checked) || 0}/${Number(run.totalCandidates) || 0} verificate · ${Number(run.deliveredFound) || 0} consegnate · ${Number(run.errors) || 0} errori · ${Number(run.durationSeconds) || 0}s`;
+    return `<li class="cron-history-item ${type}"><span class="cron-history-marker" aria-hidden="true"></span><div class="cron-history-content"><div class="cron-history-line"><strong>${source} · ${outcome}</strong><time datetime="${escapeHtml(run.at || '')}">${displayDateTime(run.at)}</time></div><p>${details}</p></div></li>`;
+  }).join('');
 }
 
 function setupCronSection() {
@@ -2163,8 +2219,9 @@ function setupCronSection() {
         cronExpression: cronExprInput?.value || '0 8,13,18 * * 1-5',
         batchSize: Number($('#cron-batch-size')?.value) || 25,
         nightPause: $('#cron-night-pause')?.checked,
-        startHour: Number($('#cron-start-hour')?.value) || 8,
-        endHour: Number($('#cron-end-hour')?.value) || 20,
+        nightPauseMode: 'pause-window',
+        startHour: Number.isFinite(Number($('#cron-start-hour')?.value)) ? Number($('#cron-start-hour')?.value) : 20,
+        endHour: Number.isFinite(Number($('#cron-end-hour')?.value)) ? Number($('#cron-end-hour')?.value) : 8,
         statePriorities: activeCronStatePriorities,
         tierMinIntervalHours: {
           high: Number($('#cron-interval-high')?.value) || 1,

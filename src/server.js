@@ -10,7 +10,7 @@ import { DEFAULT_DSV_TRACKING_URL, DSV_DELIVERY_EVENT_STATUSES, DSV_PARSER_VERSI
 import { DsvCronService } from './dsv-cron.js';
 import { CRON_PRESETS, describeCronExpression, getNextCronOccurrences, validateCronExpression } from './cron-scheduler.js';
 import { NotificationService } from './notification-service.js';
-import { archiveShipment, deleteArchivedShipment, deleteImportBatch, exportShipmentsData, getAuditLog, getControlCenter, getExistingShipmentsIndex, getImportBatches, getShipment, linkShipmentToPrestaShopOrder, registerImportBatch, restoreShipmentsData, syncAppliedShipments, syncDsvShipments, syncManualPrestaShopState, syncShipmentPrestaShopShipping, syncVerifiedShipments, updateShipmentCase } from './shipment-store.js';
+import { archiveShipment, deleteArchivedShipment, deleteImportBatch, exportShipmentsData, getAuditLog, getControlCenter, getCronRunHistory, getExistingShipmentsIndex, getImportBatches, getShipment, linkShipmentToPrestaShopOrder, registerCronRun, registerImportBatch, restoreShipmentsData, syncAppliedShipments, syncDsvShipments, syncManualPrestaShopState, syncShipmentPrestaShopShipping, syncVerifiedShipments, updateShipmentCase } from './shipment-store.js';
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -35,7 +35,7 @@ let connection = await loadSettings({
   baseUrl: process.env.PRESTASHOP_URL ?? '',
   apiKey: process.env.PRESTASHOP_WEBSERVICE_KEY ?? '',
   dsvBeta: { enabled: false, camofoxUrl: process.env.CAMOFOX_URL ?? 'http://127.0.0.1:9377', trackingUrl: process.env.DSV_TRACKING_URL ?? DEFAULT_DSV_TRACKING_URL, speedProfile: 'safe' },
-  cron: { enabled: false, intervalMinutes: 60, nightPause: true, startHour: 8, endHour: 20, batchSize: 25, minCheckIntervalHours: 2 },
+  cron: { enabled: false, intervalMinutes: 60, nightPause: true, nightPauseMode: 'pause-window', startHour: 20, endHour: 8, batchSize: 25, minCheckIntervalHours: 2 },
   notifications: normalizeNotificationSettings({}),
 });
 
@@ -57,6 +57,7 @@ const cronService = new DsvCronService({
   },
   syncManualState: syncManualPrestaShopState,
   notificationService,
+  recordCronRun: registerCronRun,
 });
 
 cronService.start();
@@ -296,8 +297,8 @@ app.post('/api/dsv-beta/jobs/:jobId/cancel', (req, res) => {
   res.status(202).json({ ok: true, status: job.status, message: 'La verifica si interromperà dopo la spedizione corrente.' });
 });
 
-app.get('/api/cron/status', (_req, res) => {
-  res.json(cronService.getStatus());
+app.get('/api/cron/status', async (_req, res) => {
+  res.json({ ...cronService.getStatus(), runHistory: await getCronRunHistory(8) });
 });
 
 app.get('/api/cron/presets', (_req, res) => {
@@ -330,7 +331,7 @@ app.post('/api/cron/config', async (req, res) => {
   try {
     const updated = normalizeCronSettings(req.body ?? {});
     await cronService.updateConfig(updated);
-    res.json({ ok: true, config: updated, status: cronService.getStatus() });
+    res.json({ ok: true, config: updated, status: { ...cronService.getStatus(), runHistory: await getCronRunHistory(8) } });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }

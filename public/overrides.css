@@ -5068,6 +5068,66 @@ main[data-active-view="history"] > .workspace-view {
 
 .cron-summary-list .cron-profile-fallback { color: var(--warning); font-weight: 500; }
 
+.cron-history {
+  min-width: 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.cron-history-heading,
+.cron-history-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.cron-history-heading { margin-bottom: 8px; }
+.cron-history-heading h4 { margin: 0; color: var(--dsv-navy); font-size: .78rem; font-weight: 650; }
+.cron-history-heading p { margin: 2px 0 0; color: var(--muted); font-size: .7rem; line-height: 1.35; }
+.cron-history-count {
+  min-width: 24px;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--muted);
+  background: #fff;
+  font-size: .68rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.cron-history-list {
+  max-height: 220px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+  scrollbar-color: #9fb1c8 transparent;
+  scrollbar-width: thin;
+}
+
+.cron-history-item {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px 2px;
+  border-top: 1px solid #e8edf4;
+}
+
+.cron-history-item:first-child { border-top: 0; }
+.cron-history-marker { width: 7px; height: 7px; margin-top: 5px; border-radius: 50%; background: #64748b; }
+.cron-history-item.complete .cron-history-marker { background: var(--success); }
+.cron-history-item.failed .cron-history-marker { background: var(--danger); }
+.cron-history-item.paused .cron-history-marker,
+.cron-history-item.cancelled .cron-history-marker,
+.cron-history-item.skipped .cron-history-marker { background: var(--warning); }
+.cron-history-content { min-width: 0; }
+.cron-history-line strong { min-width: 0; color: var(--ink); font-size: .72rem; font-weight: 600; }
+.cron-history-line time { flex: 0 0 auto; color: var(--muted); font-size: .67rem; font-variant-numeric: tabular-nums; }
+.cron-history-content p { margin: 2px 0 0; color: var(--muted); font-size: .68rem; line-height: 1.35; overflow-wrap: anywhere; }
+.cron-history-empty { padding: 12px 0; color: var(--muted); font-size: .72rem; }
+
 .cron-manual-trigger {
   margin-top: auto;
   padding-top: 10px;
@@ -5874,6 +5934,7 @@ main[data-active-view="history"] > .workspace-view {
   .settings-dashboard .cron-column { padding: 16px; }
   .settings-dashboard .cron-manual-trigger { align-items: stretch; flex-direction: column; }
   .settings-dashboard .cron-manual-trigger button { min-height: 44px; width: 100%; }
+  .cron-history-line { align-items: flex-start; flex-direction: column; gap: 2px; }
 }
 
 /* ==========================================================================

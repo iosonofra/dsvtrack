@@ -14,6 +14,7 @@ async function load() {
   catch { database = { shipments: {} }; }
   database.shipments ||= {};
   database.batches ||= [];
+  database.cronRuns ||= [];
   let migrated = false;
   for (const record of Object.values(database.shipments)) {
     if (!Array.isArray(record.dsvTimeline)) continue;
@@ -119,6 +120,36 @@ export async function getExistingShipmentsIndex() {
     if (record.orderReference) byReference.set(record.orderReference, record);
   }
   return { byTracking, byReference };
+}
+
+export async function registerCronRun(summary = {}) {
+  const db = await load();
+  const entry = {
+    id: `cron-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    at: String(summary.at || now()),
+    type: String(summary.type || 'complete'),
+    trigger: summary.trigger === 'manual' ? 'manual' : 'automatic',
+    checked: Math.max(0, Number(summary.checked) || 0),
+    totalCandidates: Math.max(0, Number(summary.totalCandidates) || 0),
+    deliveredFound: Math.max(0, Number(summary.deliveredFound) || 0),
+    errors: Math.max(0, Number(summary.errors) || 0),
+    durationSeconds: Math.max(0, Number(summary.durationSeconds) || 0),
+    speedProfile: String(summary.speedProfile || ''),
+    effectiveSpeedProfile: String(summary.effectiveSpeedProfile || ''),
+    reason: String(summary.reason || '').slice(0, 500),
+  };
+  const previous = db.cronRuns[0];
+  const duplicatePause = entry.type === 'skipped' && previous?.type === 'skipped' && previous.reason === entry.reason;
+  db.cronRuns = duplicatePause ? [{ ...previous, at: entry.at }, ...db.cronRuns.slice(1)] : [entry, ...db.cronRuns];
+  db.cronRuns = db.cronRuns.slice(0, 20);
+  await persist();
+  return entry;
+}
+
+export async function getCronRunHistory(limit = 8) {
+  const db = await load();
+  const safeLimit = Math.min(20, Math.max(1, Number(limit) || 8));
+  return (db.cronRuns || []).slice(0, safeLimit).map((entry) => ({ ...entry }));
 }
 
 async function persist() {
@@ -422,7 +453,11 @@ export async function restoreShipmentsData(importedShipments) {
   } catch {
     // Nessun backup precedente da archiviare se il file non esisteva
   }
-  database = { shipments: { ...importedShipments }, batches: database?.batches || [] };
+  database = {
+    shipments: { ...importedShipments },
+    batches: database?.batches || [],
+    cronRuns: database?.cronRuns || [],
+  };
   await persist();
   return {
     restoredCount: Object.keys(database.shipments).length,
