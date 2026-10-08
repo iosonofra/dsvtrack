@@ -74,6 +74,7 @@ const SHIPMENT_SEARCH_FIELDS = [
   ['orderReference', 90],
   ['orderId', 88],
   ['existingTracking', 84],
+  ['recipientSearchText', 82],
   ['dsvStatus', 42],
   ['currentState', 38],
   ['prestaCarrierName', 34],
@@ -249,6 +250,14 @@ export async function syncVerifiedShipments(rows) {
       currentState: row.currentState || previous.currentState || '—',
       prestaStatus: row.verification || row.validation || previous.prestaStatus || '',
       existingTracking: row.existingTracking || previous.existingTracking || '',
+      recipientFirstName: row.recipientFirstName || previous.recipientFirstName || '',
+      recipientLastName: row.recipientLastName || previous.recipientLastName || '',
+      recipientName: row.recipientName || previous.recipientName || '',
+      recipientCompany: row.recipientCompany || previous.recipientCompany || '',
+      recipientCity: row.recipientCity || previous.recipientCity || '',
+      recipientPostcode: row.recipientPostcode || previous.recipientPostcode || '',
+      recipientSearchText: row.recipientSearchText || previous.recipientSearchText || '',
+      recipientSyncedAt: row.recipientSearchText ? now() : (previous.recipientSyncedAt || null),
       lastSeenAt: row.lastSeenAt || now(),
       dsvCheckedAt: row.dsvCheckedAt || previous.dsvCheckedAt || null,
       events: previous.events || [],
@@ -256,6 +265,42 @@ export async function syncVerifiedShipments(rows) {
     addEvent(record, 'prestashop', record.prestaStatus, record.currentState);
   }
   await persist();
+}
+
+export async function getRecipientSyncCandidates(limit = 40) {
+  const db = await load();
+  const safeLimit = Math.min(100, Math.max(1, Number.parseInt(limit, 10) || 40));
+  const missing = Object.values(db.shipments)
+    .filter((record) => record.orderId && !record.recipientSyncedAt)
+    .sort((a, b) => String(b.lastSeenAt || '').localeCompare(String(a.lastSeenAt || '')));
+  return {
+    total: missing.length,
+    records: missing.slice(0, safeLimit).map((record) => ({
+      trackingNumber: record.trackingNumber,
+      orderId: String(record.orderId),
+      orderReference: record.orderReference || '',
+    })),
+  };
+}
+
+export async function syncShipmentRecipients(rows) {
+  const db = await load();
+  let updated = 0;
+  for (const row of rows) {
+    const record = db.shipments[row.trackingNumber];
+    if (!record) continue;
+    record.recipientFirstName = String(row.recipientFirstName || '');
+    record.recipientLastName = String(row.recipientLastName || '');
+    record.recipientName = String(row.recipientName || '');
+    record.recipientCompany = String(row.recipientCompany || '');
+    record.recipientCity = String(row.recipientCity || '');
+    record.recipientPostcode = String(row.recipientPostcode || '');
+    record.recipientSearchText = String(row.recipientSearchText || '');
+    record.recipientSyncedAt = now();
+    updated += 1;
+  }
+  if (updated) await persist();
+  return updated;
 }
 
 export async function syncDsvShipments(results) {
@@ -474,6 +519,10 @@ export async function searchShipments(query, { limit = 6 } = {}) {
       orderId: record.orderId || '',
       dsvStatus: record.dsvStatus || 'Non verificato',
       currentState: record.currentState || '',
+      recipientName: record.recipientName || '',
+      recipientCompany: record.recipientCompany || '',
+      recipientCity: record.recipientCity || '',
+      recipientPostcode: record.recipientPostcode || '',
       archived: Boolean(record.archived),
       dsvCheckedAt: record.dsvCheckedAt || null,
       lastSeenAt: record.lastSeenAt || null,

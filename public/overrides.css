@@ -766,6 +766,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--dsv-blue); box-s
 .global-search-result-main strong { overflow: hidden; color: var(--dsv-navy); font-family: var(--font-mono); font-size: .77rem; font-weight: 650; letter-spacing: .015em; text-overflow: ellipsis; white-space: nowrap; }
 .global-search-result-main > span,
 .global-search-result-status > span:last-child { overflow: hidden; color: var(--muted); font-size: .67rem; text-overflow: ellipsis; white-space: nowrap; }
+.global-search-result-main .global-search-recipient { color: #304966; }
 .global-search-dsv-status { width: max-content; max-width: 100%; overflow: hidden; padding: 2px 5px; background: #e8f1ff; color: #124d9d; font-size: .67rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .global-search-archived { padding: 3px 6px; border: 1px solid #c5cfdb; background: #f3f5f7; color: #52647d; font-size: .64rem; font-weight: 600; }
 .global-search-open-icon { color: var(--dsv-blue); }
@@ -3319,6 +3320,8 @@ main[data-active-view="history"] > .workspace-view {
   .global-search-result-status { grid-column: 1 / -1; grid-row: 2; grid-template-columns: auto minmax(0,1fr); align-items: center; }
   .global-search-archived,
   .global-search-open-icon { grid-column: 2; grid-row: 1; }
+  .recipient-index-panel { align-items: stretch; flex-direction: column; }
+  .recipient-index-panel button { width: 100%; min-height: 40px; }
   main > header { min-height: 52px; padding-block: 9px; }
   main > header h1 { font-size: 1.35rem; }
   main > header > p:not(.eyebrow) { display: none; }
@@ -5261,6 +5264,11 @@ main[data-active-view="history"] > .workspace-view {
 }
 .settings-form-actions button,
 .settings-catalog-card #load-catalog { min-height: 36px; padding: 7px 11px; font-size: .74rem; }
+.recipient-index-panel { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding-top: 11px; border-top: 1px solid var(--line); }
+.recipient-index-panel > div { display: grid; gap: 3px; min-width: 0; }
+.recipient-index-panel strong { color: var(--dsv-navy); font-size: .74rem; font-weight: 600; }
+.recipient-index-panel span { color: var(--muted); font-size: .68rem; line-height: 1.4; }
+.recipient-index-panel button { flex: 0 0 auto; min-height: 34px; padding: 6px 10px; font-size: .7rem; }
 
 .settings-catalog-card > p { margin: 0; font-size: .75rem; line-height: 1.45; }
 .settings-catalog-card .inline {

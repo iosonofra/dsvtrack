@@ -10,7 +10,7 @@ import { DEFAULT_DSV_TRACKING_URL, DSV_DELIVERY_EVENT_STATUSES, DSV_PARSER_VERSI
 import { DsvCronService } from './dsv-cron.js';
 import { CRON_PRESETS, describeCronExpression, getNextCronOccurrences, validateCronExpression } from './cron-scheduler.js';
 import { NotificationService } from './notification-service.js';
-import { archiveShipment, deleteArchivedShipment, deleteImportBatch, exportShipmentsData, getAuditLog, getControlCenter, getCronRunHistory, getExistingShipmentsIndex, getImportBatches, getShipment, linkShipmentToPrestaShopOrder, registerCronRun, registerImportBatch, restoreShipmentsData, searchShipments, syncAppliedShipments, syncDsvShipments, syncManualPrestaShopState, syncShipmentPrestaShopShipping, syncVerifiedShipments, updateShipmentCase } from './shipment-store.js';
+import { archiveShipment, deleteArchivedShipment, deleteImportBatch, exportShipmentsData, getAuditLog, getControlCenter, getCronRunHistory, getExistingShipmentsIndex, getImportBatches, getRecipientSyncCandidates, getShipment, linkShipmentToPrestaShopOrder, registerCronRun, registerImportBatch, restoreShipmentsData, searchShipments, syncAppliedShipments, syncDsvShipments, syncManualPrestaShopState, syncShipmentPrestaShopShipping, syncShipmentRecipients, syncVerifiedShipments, updateShipmentCase } from './shipment-store.js';
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -602,6 +602,37 @@ app.get('/api/control-center/search', async (req, res) => {
     if (query.length > 160) return res.status(400).json({ error: 'La ricerca è troppo lunga.' });
     res.json(await searchShipments(query, { limit: req.query.limit }));
   } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.get('/api/control-center/recipients/status', async (_req, res) => {
+  try {
+    const candidates = await getRecipientSyncCandidates(1);
+    res.json({ remaining: candidates.total });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.post('/api/control-center/recipients/sync', async (req, res) => {
+  try {
+    const batchSize = Math.min(50, Math.max(1, Number.parseInt(req.body?.batchSize, 10) || 40));
+    const candidates = await getRecipientSyncCandidates(batchSize);
+    if (!candidates.records.length) return res.json({ processed: 0, enriched: 0, remaining: 0 });
+    const shop = client();
+    const orders = await shop.findOrdersByIds(candidates.records.map((record) => record.orderId));
+    const recipientsByOrderId = await shop.getDeliveryRecipientsForOrders(orders);
+    const candidatesByOrderId = new Map(candidates.records.map((record) => [String(record.orderId), record]));
+    const rows = orders.map((order) => ({
+      ...candidatesByOrderId.get(String(order.id)),
+      ...(recipientsByOrderId.get(String(order.id)) || {}),
+    })).filter((row) => row.trackingNumber);
+    const foundOrderIds = new Set(orders.map((order) => String(order.id)));
+    for (const candidate of candidates.records) {
+      if (!foundOrderIds.has(String(candidate.orderId))) rows.push(candidate);
+    }
+    const processed = await syncShipmentRecipients(rows);
+    const remaining = Math.max(0, candidates.total - processed);
+    const enriched = rows.filter((row) => row.recipientSearchText).length;
+    res.json({ processed, enriched, remaining });
+  } catch (error) { res.status(400).json({ error: `Impossibile acquisire i destinatari: ${error.message}` }); }
 });
 
 app.get('/api/control-center/:trackingNumber', async (req, res) => {
@@ -1408,7 +1439,7 @@ async function runVerification(job, rows) {
       if (row.alreadyImported) return { ...row, verification: 'Già importata (saltata)', canApply: false };
       if (row.validation !== 'Pronta per la verifica') return { ...row, verification: row.validation, canApply: false };
       const check = outcomes.get(row.orderReference);
-      return { ...row, verification: check.status, existingTracking: check.existingTracking ?? '', orderId: check.orderId ?? '', orderDate: check.orderDate ?? '', prestaStateId: check.prestaStateId ?? '', currentState: check.currentState ?? '—', canApply: ['Pronta per aggiornamento', 'Tracking già presente'].includes(check.status) };
+      return { ...row, verification: check.status, existingTracking: check.existingTracking ?? '', orderId: check.orderId ?? '', orderDate: check.orderDate ?? '', prestaStateId: check.prestaStateId ?? '', currentState: check.currentState ?? '—', recipientFirstName: check.recipientFirstName ?? '', recipientLastName: check.recipientLastName ?? '', recipientName: check.recipientName ?? '', recipientCompany: check.recipientCompany ?? '', recipientCity: check.recipientCity ?? '', recipientPostcode: check.recipientPostcode ?? '', recipientSearchText: check.recipientSearchText ?? '', canApply: ['Pronta per aggiornamento', 'Tracking già presente'].includes(check.status) };
     });
     const summary = verified.reduce((output, row) => { output[row.verification] = (output[row.verification] ?? 0) + 1; return output; }, {});
     await syncVerifiedShipments(verified);
@@ -1426,7 +1457,7 @@ async function runVerification(job, rows) {
     }
     const verificationId = randomUUID();
     verifiedImports.set(verificationId, { rows: verified, expiresAt: Date.now() + VERIFIED_IMPORT_TTL_MS });
-    job.result = { verificationId, summary, rows: verified, requestPlan: { batches: Math.ceil(candidates.length / VERIFY_BATCH_SIZE), maxRequests: 1 + Math.ceil(candidates.length / VERIFY_BATCH_SIZE) * 2, intervalMs: 800 } };
+    job.result = { verificationId, summary, rows: verified, requestPlan: { batches: Math.ceil(candidates.length / VERIFY_BATCH_SIZE), maxRequests: 1 + Math.ceil(candidates.length / VERIFY_BATCH_SIZE) * 3, intervalMs: 800, recipientLookup: 'Una richiesta batch per blocco, facoltativa' } };
     job.status = 'complete';
   } catch (error) {
     job.error = error.message;

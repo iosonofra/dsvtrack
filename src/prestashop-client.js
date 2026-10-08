@@ -34,6 +34,7 @@ export class PrestaShopClient {
   constructor({ baseUrl, apiKey }) {
     this.baseUrl = trimSlash(baseUrl);
     this.apiKey = apiKey;
+    this.deliveryAddressCache = new Map();
   }
 
   async request(resource, options = {}) {
@@ -148,8 +149,35 @@ export class PrestaShopClient {
 
   async findOrdersByReferences(references) {
     if (!references.length) return [];
-    const payload = await this.request(`orders?filter[reference]=[${references.join('|')}]&display=full`);
+    const payload = await this.request(`orders?filter[reference]=[${references.join('|')}]&display=[id,reference,date_add,current_state,id_address_delivery,id_carrier]`);
     return payload.orders ?? [];
+  }
+
+  async findOrdersByIds(orderIds) {
+    const ids = [...new Set(orderIds.map(String).filter(Boolean))];
+    if (!ids.length) return [];
+    const payload = await this.request(`orders?filter[id]=[${ids.join('|')}]&display=[id,reference,id_address_delivery]`);
+    return payload.orders ?? [];
+  }
+
+  async findDeliveryAddressesByIds(addressIds) {
+    const ids = [...new Set(addressIds.map(String).filter(Boolean))];
+    const missingIds = ids.filter((id) => !this.deliveryAddressCache.has(id));
+    if (missingIds.length) {
+      const payload = await this.request(`addresses?filter[id]=[${missingIds.join('|')}]&display=[id,firstname,lastname,company,postcode,city]`);
+      const addresses = payload.addresses ?? [];
+      const byId = new Map(addresses.map((address) => [String(address.id), address]));
+      for (const id of missingIds) this.deliveryAddressCache.set(id, byId.get(id) || null);
+    }
+    return ids.map((id) => this.deliveryAddressCache.get(id)).filter(Boolean);
+  }
+
+  async getDeliveryRecipientsForOrders(orders) {
+    const addressIds = orders.map((order) => String(order.id_address_delivery || '')).filter(Boolean);
+    if (!addressIds.length) return new Map();
+    const addresses = await this.findDeliveryAddressesByIds(addressIds);
+    const addressesById = new Map(addresses.map((address) => [String(address.id), address]));
+    return new Map(orders.map((order) => [String(order.id), recipientDetails(addressesById.get(String(order.id_address_delivery))) ]));
   }
 
   async findOrderCarriers(orderId) {
@@ -159,14 +187,17 @@ export class PrestaShopClient {
 
   async findOrderCarriersByOrderIds(orderIds) {
     if (!orderIds.length) return [];
-    const payload = await this.request(`order_carriers?filter[id_order]=[${orderIds.join('|')}]&display=full`);
+    const payload = await this.request(`order_carriers?filter[id_order]=[${orderIds.join('|')}]&display=[id,id_order,id_carrier,tracking_number]`);
     return payload.order_carriers ?? [];
   }
 
   async inspectOrdersByReferences(references, stateNames = new Map()) {
     const orders = await this.findOrdersByReferences(references);
     const ordersByReference = groupBy(orders, (order) => String(order.reference));
-    const shipments = await this.findOrderCarriersByOrderIds(orders.map((order) => String(order.id)));
+    const [shipments, recipientsByOrderId] = await Promise.all([
+      this.findOrderCarriersByOrderIds(orders.map((order) => String(order.id))),
+      this.getDeliveryRecipientsForOrders(orders).catch(() => new Map()),
+    ]);
     const shipmentsByOrderId = groupBy(shipments, (shipment) => String(shipment.id_order));
 
     return references.map((reference) => {
@@ -175,13 +206,14 @@ export class PrestaShopClient {
         return { reference, status: matchingOrders.length ? 'Riferimento ambiguo su PrestaShop' : 'Ordine non trovato su PrestaShop' };
       }
       const order = matchingOrders[0];
+      const recipient = recipientsByOrderId.get(String(order.id)) || {};
       const orderShipments = shipmentsByOrderId.get(String(order.id)) ?? [];
       if (orderShipments.length !== 1) {
-        return orderDetails({ reference, status: orderShipments.length ? 'Ordine con più spedizioni' : 'Nessuna spedizione associata', order }, stateNames);
+        return orderDetails({ reference, status: orderShipments.length ? 'Ordine con più spedizioni' : 'Nessuna spedizione associata', order, recipient }, stateNames);
       }
       const existingTracking = String(orderShipments[0].tracking_number ?? '').trim();
-      if (existingTracking) return orderDetails({ reference, status: 'Tracking già presente', order, existingTracking }, stateNames);
-      return orderDetails({ reference, status: 'Pronta per aggiornamento', order }, stateNames);
+      if (existingTracking) return orderDetails({ reference, status: 'Tracking già presente', order, existingTracking, recipient }, stateNames);
+      return orderDetails({ reference, status: 'Pronta per aggiornamento', order, recipient }, stateNames);
     });
   }
 
@@ -441,13 +473,34 @@ function groupBy(items, selector) {
 }
 
 function orderDetails(result, stateNames) {
-  const { order, ...details } = result;
+  const { order, recipient = {}, ...details } = result;
   return {
     ...details,
+    ...recipient,
     orderId: order.id,
     orderDate: order.date_add ?? '',
     prestaStateId: String(order.current_state ?? ''),
     currentState: stateNames.get(String(order.current_state)) ?? `Stato ${order.current_state ?? '—'}`,
+  };
+}
+
+function recipientDetails(address) {
+  if (!address) return {};
+  const clean = (value, maxLength = 120) => String(value || '').trim().replace(/\s+/g, ' ').slice(0, maxLength);
+  const recipientFirstName = clean(address.firstname, 80);
+  const recipientLastName = clean(address.lastname, 80);
+  const recipientCompany = clean(address.company, 120);
+  const recipientCity = clean(address.city, 100);
+  const recipientPostcode = clean(address.postcode, 24);
+  const recipientName = [recipientFirstName, recipientLastName].filter(Boolean).join(' ');
+  return {
+    recipientFirstName,
+    recipientLastName,
+    recipientName,
+    recipientCompany,
+    recipientCity,
+    recipientPostcode,
+    recipientSearchText: [recipientName, recipientCompany, recipientCity, recipientPostcode].filter(Boolean).join(' '),
   };
 }
 

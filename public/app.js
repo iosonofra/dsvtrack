@@ -2491,6 +2491,57 @@ function setupMappingTools() {
   });
 }
 
+function setupRecipientIndexing() {
+  const button = $('#sync-recipient-index-btn');
+  const status = $('#recipient-index-status');
+  if (!button || !status) return;
+  let remaining = 0;
+  const updateStatus = async () => {
+    try {
+      const result = await request('/api/control-center/recipients/status');
+      remaining = Number(result.remaining || 0);
+      status.textContent = remaining
+        ? `${remaining} spedizioni collegate non hanno ancora il destinatario indicizzato.`
+        : 'Indice aggiornato: puoi cercare per nome, azienda, città e CAP.';
+      button.hidden = remaining === 0;
+    } catch (error) {
+      status.textContent = error.message;
+    }
+  };
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    let processedTotal = 0;
+    let enrichedTotal = 0;
+    try {
+      for (let batch = 0; batch < 5; batch += 1) {
+        status.textContent = `Indicizzazione in corso… ${processedTotal} spedizioni elaborate.`;
+        const result = await request('/api/control-center/recipients/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ batchSize: 40 }),
+        });
+        processedTotal += Number(result.processed || 0);
+        enrichedTotal += Number(result.enriched || 0);
+        remaining = Number(result.remaining || 0);
+        if (!remaining || !result.processed) break;
+      }
+      if (remaining) {
+        status.textContent = `${processedTotal} elaborate, ${enrichedTotal} con destinatario. Ne restano ${remaining}: continua quando preferisci.`;
+        button.textContent = 'Continua indicizzazione';
+      } else {
+        status.textContent = `Indice completato: ${enrichedTotal} destinatari acquisiti in questa sessione.`;
+        button.hidden = true;
+      }
+    } catch (error) {
+      status.textContent = `${error.message} Verifica che la chiave Webservice possa leggere la risorsa “addresses”.`;
+      button.textContent = 'Riprova indicizzazione';
+    } finally {
+      button.disabled = false;
+    }
+  });
+  updateStatus();
+}
+
 function setupWorkspace() {
   const main = $('main');
   const cards = [...main.querySelectorAll(':scope > section.card')];
@@ -2691,7 +2742,8 @@ function setupWorkspace() {
       actionGroup.append(saveButton);
     }
     form?.append(actionGroup);
-    actionGroup.insertAdjacentHTML('afterend', '<div class="settings-test-result" data-settings-test-result="prestashop" role="status" aria-live="polite" hidden></div>');
+    actionGroup.insertAdjacentHTML('afterend', '<div class="settings-test-result" data-settings-test-result="prestashop" role="status" aria-live="polite" hidden></div><div class="recipient-index-panel"><div><strong>Ricerca per destinatario</strong><span id="recipient-index-status">Verifica dell’indice locale…</span></div><button id="sync-recipient-index-btn" type="button" class="secondary">Indicizza destinatari</button></div>');
+    setupRecipientIndexing();
     const emptyActions = [...connectionCard.querySelectorAll(':scope > .actions')].find((item) => !item.children.length);
     emptyActions?.remove();
   }
@@ -3158,12 +3210,14 @@ function renderGlobalSearchResults(payload, query) {
   globalSearchActiveIndex = -1;
   const total = Number(payload.total || 0);
   if (!globalSearchResults.length) {
-    menu.innerHTML = `<div class="global-search-empty"><strong>Nessuna spedizione trovata</strong><span>Prova con tracking, riferimento ordine, ID, stato o località DSV.</span></div>`;
+    menu.innerHTML = `<div class="global-search-empty"><strong>Nessuna spedizione trovata</strong><span>Prova con tracking, riferimento, destinatario, azienda, stato o località DSV.</span></div>`;
   } else {
     const rows = globalSearchResults.map((record, index) => {
       const reference = record.orderReference || (record.orderId ? `ID ${record.orderId}` : 'Ordine non collegato');
       const prestaState = record.currentState || 'Stato PrestaShop non disponibile';
-      return `<button id="global-search-option-${index}" class="global-search-result" type="button" role="option" aria-selected="false" data-search-index="${index}"><span class="global-search-result-main"><strong>${highlightGlobalSearchMatch(record.trackingNumber, query)}</strong><span>${highlightGlobalSearchMatch(reference, query)}</span></span><span class="global-search-result-status"><span class="global-search-dsv-status">${escapeHtml(record.dsvStatus || 'Non verificato')}</span><span>${escapeHtml(prestaState)}</span></span>${record.archived ? '<span class="global-search-archived">Archiviata</span>' : '<svg class="global-search-open-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5"/></svg>'}</button>`;
+      const recipientParts = [record.recipientName, record.recipientCompany, record.recipientCity].filter((value, partIndex, values) => value && values.indexOf(value) === partIndex);
+      const recipient = recipientParts.join(' · ');
+      return `<button id="global-search-option-${index}" class="global-search-result" type="button" role="option" aria-selected="false" data-search-index="${index}"><span class="global-search-result-main"><strong>${highlightGlobalSearchMatch(record.trackingNumber, query)}</strong><span>${highlightGlobalSearchMatch(reference, query)}</span>${recipient ? `<span class="global-search-recipient">${highlightGlobalSearchMatch(recipient, query)}</span>` : ''}</span><span class="global-search-result-status"><span class="global-search-dsv-status">${escapeHtml(record.dsvStatus || 'Non verificato')}</span><span>${escapeHtml(prestaState)}</span></span>${record.archived ? '<span class="global-search-archived">Archiviata</span>' : '<svg class="global-search-open-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5"/></svg>'}</button>`;
     }).join('');
     const shownLabel = total > globalSearchResults.length ? `${globalSearchResults.length} di ${total}` : `${total}`;
     menu.innerHTML = `<div class="global-search-meta"><span><strong>${shownLabel}</strong> risultat${total === 1 ? 'o' : 'i'}</span><span><kbd>↑</kbd><kbd>↓</kbd> per navigare · <kbd>Invio</kbd> per aprire</span></div><div class="global-search-list">${rows}</div>`;
